@@ -2,7 +2,7 @@
 
 <img src="readme-banner.png" alt="OpenSlides preview" width="100%" />
 
-[![Deploy with Clawnify](https://app.clawnify.com/deploy-button.svg)](https://app.clawnify.com/deploy?repo=clawnify/open-slides)
+[![Deploy with Clawnify](https://app.clawnify.com/deploy-button.svg)](https://app.clawnify.com/deploy?repo=clawnify/OpenSlides)
 
 An open-source, **agent-friendly slide maker**. Design **on-brand slides**, drop
 in your own logos and images, **present fullscreen right in the browser**, and
