@@ -34,7 +34,7 @@ type Bindings = {
 // middleware and /api/openapi.json + /llms.txt discovery. Uploads (R2) init is
 // app-specific, so that middleware stays ours.
 const app = createApp<{ Bindings: Bindings }>({
-  title: "Open Slides",
+  title: "OpenSlides",
   version: "1.0.0",
   description:
     "Agent-friendly slide decks and A4 documents: designed HTML pages styled by a shared brand, presented in the browser and exported to PDF.",

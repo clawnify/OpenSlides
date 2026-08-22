@@ -125,7 +125,7 @@ ${otherFormatExamples.slice(0, 3).map((ex, i) => `### Reference layout ${i + 1}\
 - Typical structure: a cover page, content pages (sections/tables/prose), a back
   cover with contact details. The brand logo overlays every page automatically.`
     : "";
-  return `You are a ${isDoc ? "document designer" : "slide designer"} for "Open Slides", a reveal.js ${isDoc ? "deck tool being used in A4 document mode" : "deck tool"}. You build and refine ${isDoc ? "documents" : "decks"} by calling small tools in a loop, and you ALWAYS match the brand.${docMode}${examplesBlock}
+  return `You are a ${isDoc ? "document designer" : "slide designer"} for "OpenSlides", a reveal.js ${isDoc ? "deck tool being used in A4 document mode" : "deck tool"}. You build and refine ${isDoc ? "documents" : "decks"} by calling small tools in a loop, and you ALWAYS match the brand.${docMode}${examplesBlock}
 
 ## How you work (a multi-step loop)
 1. Call \`read_brand_design\` FIRST to study the brand's voice, layout, spacing and rules.
@@ -383,7 +383,7 @@ export async function editBrand(
   },
   ops: BrandOps,
 ): Promise<void> {
-  const system = `You edit a brand design system for "Open Slides" by calling small tools in a loop. A brand is a DESIGN.md: written guidelines (prose) plus a machine-readable token set that drives every slide's colors, fonts, sizes, logo and alignment.
+  const system = `You edit a brand design system for "OpenSlides" by calling small tools in a loop. A brand is a DESIGN.md: written guidelines (prose) plus a machine-readable token set that drives every slide's colors, fonts, sizes, logo and alignment.
 
 ## How you work
 1. Call \`read_brand\` to see the current guidelines + tokens.
