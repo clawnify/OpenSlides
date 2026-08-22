@@ -854,7 +854,7 @@ export function App() {
         <span className="grid h-7 w-7 place-items-center rounded-md bg-neutral-900 text-white"><Presentation size={15} /></span>
         <div className="relative">
           <button onClick={() => setDecksOpen((o) => !o)} className="flex items-center gap-1.5 rounded-md px-2 py-1 text-sm font-medium hover:bg-neutral-100">
-            {title || "Open Slides"} <ChevronDown size={14} className="text-neutral-400" />
+            {title || "OpenSlides"} <ChevronDown size={14} className="text-neutral-400" />
           </button>
           {decksOpen && (
             <div className="absolute left-0 z-30 mt-1 w-60 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 shadow-lg">

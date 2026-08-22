@@ -1,4 +1,4 @@
-# Open Slides — agent guide
+# OpenSlides — agent guide
 
 This app turns **designed HTML slides into reveal.js decks — and A4 documents**.
 You author each slide as a small block of HTML that fills a fixed canvas and is
