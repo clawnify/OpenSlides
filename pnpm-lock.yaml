@@ -231,9 +231,6 @@ packages:
       react:
         optional: true
 
-  '@clawnify/db@0.4.1':
-    resolution: {integrity: sha512-Ck9RGqEElt6P/3S9quxvr2MIg8mZk1n9wFftH3PpGPFnpA6hbk0td67oaioeMRuDCn7vePcJCeyYEkbvNVYy/g==}
-
   '@clawnify/db@0.4.2':
     resolution: {integrity: sha512-s+G/5bDVFx7Na8WVETfl8EhyPcbmgs5LIE1TsM0vGUOAtPihQGlVX1xpfmg5lsMv8+OChKaHsZIMnzpXY8pyAw==}
 
@@ -2561,47 +2558,13 @@ snapshots:
 
   '@clawnify/app@0.2.1(@cloudflare/workers-types@4.20260613.1)(@hono/zod-openapi@1.5.1(hono@4.12.25)(zod@4.4.3))(@opentelemetry/api@1.9.1)(@phosphor-icons/react@2.1.10(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(hono@4.12.25)(react@19.2.7)':
     dependencies:
-      '@clawnify/db': 0.4.1(@cloudflare/workers-types@4.20260613.1)(@opentelemetry/api@1.9.1)
+      '@clawnify/db': 0.4.2(@cloudflare/workers-types@4.20260613.1)(@opentelemetry/api@1.9.1)
       '@clawnify/routes': 0.2.2(@hono/zod-openapi@1.5.1(hono@4.12.25)(zod@4.4.3))(hono@4.12.25)
       '@hono/zod-openapi': 1.5.1(hono@4.12.25)(zod@4.4.3)
       hono: 4.12.25
     optionalDependencies:
       '@phosphor-icons/react': 2.1.10(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       react: 19.2.7
-    transitivePeerDependencies:
-      - '@aws-sdk/client-rds-data'
-      - '@cloudflare/workers-types'
-      - '@electric-sql/pglite'
-      - '@libsql/client'
-      - '@libsql/client-wasm'
-      - '@neondatabase/serverless'
-      - '@op-engineering/op-sqlite'
-      - '@opentelemetry/api'
-      - '@planetscale/database'
-      - '@prisma/client'
-      - '@tidbcloud/serverless'
-      - '@types/better-sqlite3'
-      - '@types/pg'
-      - '@types/sql.js'
-      - '@upstash/redis'
-      - '@vercel/postgres'
-      - '@xata.io/client'
-      - better-sqlite3
-      - bun-types
-      - expo-sqlite
-      - gel
-      - knex
-      - kysely
-      - mysql2
-      - pg
-      - postgres
-      - prisma
-      - sql.js
-      - sqlite3
-
-  '@clawnify/db@0.4.1(@cloudflare/workers-types@4.20260613.1)(@opentelemetry/api@1.9.1)':
-    dependencies:
-      drizzle-orm: 0.45.2(@cloudflare/workers-types@4.20260613.1)(@opentelemetry/api@1.9.1)
     transitivePeerDependencies:
       - '@aws-sdk/client-rds-data'
       - '@cloudflare/workers-types'
