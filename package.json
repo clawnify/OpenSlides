@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler d1 execute open-slides-db --local --file=src/server/schema.sql && concurrently -n ui,api -c cyan,green \"vite\" \"wrangler dev --port 8787\"",
+    "dev": "wrangler d1 execute open-slides-db --local --file=schema.sql && concurrently -n ui,api -c cyan,green \"vite\" \"wrangler dev --port 8787\"",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
     "deploy": "clawnify deploy"
@@ -12,8 +12,8 @@
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.84",
     "@antv/infographic": "^0.2.19",
-    "@clawnify/app": "^0.1.0",
-    "@clawnify/db": "^0.4.1",
+    "@clawnify/app": "^0.2.1",
+    "@clawnify/db": "^0.4.2",
     "@hono/zod-openapi": "^1.5.1",
     "@openrouter/ai-sdk-provider": "^2.9.1",
     "ai": "^6.0.205",
@@ -22,7 +22,8 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "tailwindcss": "^4.2.0",
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "@phosphor-icons/react": "^2.1.10"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260613.1",
@@ -34,7 +35,8 @@
     "concurrently": "^9.0.0",
     "typescript": "^5.7.0",
     "vite": "^6.0.0",
-    "wrangler": "^4.0.0"
+    "wrangler": "^4.0.0",
+    "reveal.js": "5.1.0"
   },
   "engines": {
     "node": ">=22"

@@ -196,11 +196,7 @@ ${slides}
 </body></html>`;
 }
 
-export function revealDoc(opts: DocOpts): string {
-  if (opts.mode === "print") return buildPrintDoc(opts);
-  const theme = safeTheme(opts.theme);
-  const sections = buildSections(opts.content, opts.only);
-
+export function revealViewScript(opts: Pick<DocOpts, "format" | "thumb" | "nav">): string {
   // Fixed design canvas (the deck format's size). center:false — designed slides
   // position their own content (absolute / flex) inside the canvas, so reveal
   // must not re-center. fragments:false so animated elements are always visible
@@ -377,6 +373,15 @@ export function revealDoc(opts: DocOpts): string {
            parent.postMessage({ source: 'slides-preview', type: 'slidechanged', h: i.h, v: i.v }, '*');
          }`;
 
+  return CHART_FNS + "\n" + harness;
+}
+
+export function revealDoc(opts: DocOpts): string {
+  if (opts.mode === "print") return buildPrintDoc(opts);
+  const REVEAL = "/vendor/reveal";
+  const theme = safeTheme(opts.theme);
+  const sections = buildSections(opts.content, opts.only);
+
   // The base theme provides layout/sizing rules; the brand head overrides the
   // reveal --r-* color/font variables on top of it.
   return `<!doctype html><html><head><meta charset="utf-8" />
@@ -438,7 +443,6 @@ ${sections}
 <script src="${REVEAL}/dist/reveal.js"></script>
 <script src="${REVEAL}/plugin/highlight/highlight.js"></script>
 ${opts.mode === "view" && !opts.thumb ? `<script src="${REVEAL}/plugin/notes/notes.js"></script>` : ""}
-<script>${CHART_FNS}</script>
-<script>${harness}</script>
+<script src="/api/view-script.js?format=${encodeURIComponent(opts.format.id)}&amp;thumb=${opts.thumb ? "1" : "0"}&amp;nav=${encodeURIComponent(opts.nav?.mode ?? "dots")}"></script>
 </body></html>`;
 }

@@ -1,3 +1,4 @@
+import { AppNav, embedded, reportLocation } from "@clawnify/app/client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Plus,
@@ -316,6 +317,7 @@ data
 );
 
 export function App() {
+  const [ready, setReady] = useState(false);
   const [decks, setDecks] = useState<Deck[]>([]);
   const [templates, setTemplates] = useState<SlideTemplate[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -385,9 +387,30 @@ export function App() {
 
   useEffect(() => {
     loadBrands();
-    loadDecks().then((rows) => rows.length && selectDeck(rows[0]));
+    const params = new URLSearchParams(location.search);
+    loadDecks().then((rows) => {
+      const deck = rows.find((d) => d.id === params.get("deck")) ?? rows[0];
+      if (deck) selectDeck(deck);
+      if (params.get("page") === "brands") {
+        setPage("brands");
+        setEditorBrandId(params.get("brand"));
+      }
+      setReady(true);
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!ready) return;
+    const url = new URL(location.href);
+    url.searchParams.set("page", page);
+    url.searchParams.delete("deck");
+    url.searchParams.delete("brand");
+    if (selectedId) url.searchParams.set("deck", selectedId);
+    if (page === "brands" && editorBrandId) url.searchParams.set("brand", editorBrandId);
+    history.replaceState(null, "", url);
+    reportLocation(url.pathname + url.search);
+  }, [ready, page, selectedId, editorBrandId]);
 
   // The "Add slide" template set follows the deck's format (16:9 slides vs A4
   // document pages).
@@ -849,10 +872,24 @@ export function App() {
 
   return (
     <div className="flex h-screen flex-col bg-neutral-50 text-neutral-900">
+      {embedded && <AppNav title="Slides" active={page === "brands" ? "brands" : selectedId ?? ""}
+        groups={[
+          { label: "Presentations", items: decks.map((d) => ({ id: d.id, label: d.title || "Untitled", icon: "file-text", href: `/?deck=${encodeURIComponent(d.id)}` })) },
+          { items: [
+            { id: "brands", label: "Brands", icon: "layers", href: "/?page=brands" },
+            { id: "new-deck", label: "New deck", icon: "file" },
+            { id: "new-document", label: "New document", icon: "file-text" },
+          ] },
+        ]} onNavigate={(item) => {
+          if (item.id === "brands") { setPage("brands"); setEditorBrandId(null); }
+          else if (item.id === "new-deck") void newDeck();
+          else if (item.id === "new-document") void newDeck("a4-portrait");
+          else { const deck = decks.find((d) => d.id === item.id); if (deck) selectDeck(deck); }
+        }} />}
       {/* top bar */}
       <header className="flex h-12 shrink-0 items-center gap-2 border-b border-neutral-200 bg-white px-3">
         <span className="grid h-7 w-7 place-items-center rounded-md bg-neutral-900 text-white"><Presentation size={15} /></span>
-        <div className="relative">
+        {!embedded && <div className="relative">
           <button onClick={() => setDecksOpen((o) => !o)} className="flex items-center gap-1.5 rounded-md px-2 py-1 text-sm font-medium hover:bg-neutral-100">
             {title || "OpenSlides"} <ChevronDown size={14} className="text-neutral-400" />
           </button>
@@ -869,7 +906,8 @@ export function App() {
               ))}
             </div>
           )}
-        </div>
+        </div>}
+        {embedded && selected && <button title="Delete deck" onClick={() => deleteDeck(selected.id)}><Trash2 size={15} /></button>}
         {selected && (
           <input value={title} onChange={(e) => { setTitle(e.target.value); scheduleSave(slides, e.target.value); }}
             className="ml-1 w-44 rounded px-2 py-1 text-sm text-neutral-500 outline-none hover:bg-neutral-100 focus:bg-neutral-100" placeholder="Deck title" />
@@ -884,9 +922,9 @@ export function App() {
           </div>
         )}
         <span className="mr-1 text-xs text-neutral-400">{saving ? "Saving…" : selected ? `${slides.length} ${pageWord}${slides.length === 1 ? "" : "s"}` : ""}</span>
-        <button onClick={() => setPage(page === "brands" ? "deck" : "brands")} className={`flex h-8 items-center gap-1.5 rounded-md border px-3 text-sm ${page === "brands" ? "border-neutral-900 bg-neutral-900 text-white" : "border-neutral-200 hover:bg-neutral-50"}`}>
+        {!embedded && <button onClick={() => setPage(page === "brands" ? "deck" : "brands")} className={`flex h-8 items-center gap-1.5 rounded-md border px-3 text-sm ${page === "brands" ? "border-neutral-900 bg-neutral-900 text-white" : "border-neutral-200 hover:bg-neutral-50"}`}>
           <Palette size={14} /> Brands
-        </button>
+        </button>}
         <button onClick={exportPdf} disabled={!selected || exporting} className="flex h-8 items-center gap-1.5 rounded-md border border-neutral-200 px-3 text-sm hover:bg-neutral-50 disabled:opacity-40">
           {exporting ? <Loader2 size={14} className="animate-spin" /> : <FileDown size={14} />} PDF
         </button>
@@ -1124,6 +1162,8 @@ function BrandEditor({ brandId, active, autoInstruction, onAutoConsumed, onBack,
   const [references, setReferences] = useState<Asset[]>([]); // the brand's original source files
   const [instruction, setInstruction] = useState("");
   const [busy, setBusy] = useState(false);
+  // Inline confirmation: native confirm() is blocked when the app is embedded.
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [pk, setPk] = useState(0);
   const tmr = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -1215,7 +1255,7 @@ function BrandEditor({ brandId, active, autoInstruction, onAutoConsumed, onBack,
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoInstruction, tokens]);
   async function del() {
-    if (!confirm("Delete this brand?")) return;
+    setConfirmDelete(false);
     await fetch(`/api/brands/${brandId}`, { method: "DELETE" });
     onDeleted();
   }
@@ -1228,7 +1268,15 @@ function BrandEditor({ brandId, active, autoInstruction, onAutoConsumed, onBack,
         <input value={name} onChange={(e) => setName(e.target.value)} onBlur={() => put({ name })} className="ml-1 w-56 rounded px-2 py-1 text-sm font-medium outline-none hover:bg-neutral-100 focus:bg-neutral-100" placeholder="Brand name" />
         <div className="flex-1" />
         {active && <span className="flex items-center gap-1 text-xs text-green-600"><Check size={13} /> In use on current deck</span>}
-        <button onClick={del} className="text-xs text-neutral-400 hover:text-red-500">Delete</button>
+        {confirmDelete ? (
+          <span role="group" aria-label="Confirm brand deletion" className="flex items-center gap-2 text-xs">
+            <span className="text-neutral-500">Delete this brand?</span>
+            <button onClick={del} className="font-medium text-red-600 hover:underline">Delete</button>
+            <button onClick={() => setConfirmDelete(false)} className="text-neutral-500 hover:underline">Cancel</button>
+          </span>
+        ) : (
+          <button onClick={() => setConfirmDelete(true)} className="text-xs text-neutral-400 hover:text-red-500">Delete</button>
+        )}
         <button onClick={() => onUse("a4-portrait")} className="rounded-md border border-neutral-200 px-3 py-1.5 text-sm hover:bg-neutral-50">New A4 document</button>
         <button onClick={() => onUse("16:9")} className="rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-700">Use for new slides</button>
       </div>

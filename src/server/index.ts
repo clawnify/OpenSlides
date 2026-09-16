@@ -9,7 +9,7 @@ import {
   makeKey,
   PLACEHOLDER_KEY,
 } from "./uploads";
-import { revealDoc } from "./reveal";
+import { revealDoc, revealViewScript } from "./reveal";
 import { renderDeckPdf, renderSlidePng, renderSlidePngLink, PdfRenderError } from "./pdf";
 import { parseTokens, brandHead, brandLogoTag, brandGuideHtml, extractExampleSlides, extractBrandExamples, setTokensInMd, DEFAULT_BRAND_MD, type BrandTokens } from "./brand";
 import { TEMPLATES, templatesFor } from "./templates";
@@ -137,6 +137,13 @@ app.delete("/api/decks/:id", async (c) => {
   scheduleSweep(c);
   return c.json({ ok: true });
 });
+
+// Only validated renderer options enter this script; authored slide HTML never does.
+app.get("/api/view-script.js", (c) => c.body(revealViewScript({
+  format: safeFormat(c.req.query("format")),
+  thumb: c.req.query("thumb") === "1",
+  nav: parseNav(JSON.stringify({ mode: c.req.query("nav") })),
+}), 200, { "Content-Type": "application/javascript; charset=utf-8" }));
 
 // Interactive reveal.js deck — loaded by the editor's preview iframe and
 // fullscreened for in-app presenting. ?h=&v= restores the current slide.

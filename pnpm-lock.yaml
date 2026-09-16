@@ -15,17 +15,20 @@ importers:
         specifier: ^0.2.19
         version: 0.2.19
       '@clawnify/app':
-        specifier: ^0.1.0
-        version: 0.1.0(@cloudflare/workers-types@4.20260613.1)(@hono/zod-openapi@1.5.1(hono@4.12.25)(zod@4.4.3))(@opentelemetry/api@1.9.1)(hono@4.12.25)
+        specifier: ^0.2.1
+        version: 0.2.1(@cloudflare/workers-types@4.20260613.1)(@hono/zod-openapi@1.5.1(hono@4.12.25)(zod@4.4.3))(@opentelemetry/api@1.9.1)(@phosphor-icons/react@2.1.10(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(hono@4.12.25)(react@19.2.7)
       '@clawnify/db':
-        specifier: ^0.4.1
-        version: 0.4.1(@cloudflare/workers-types@4.20260613.1)(@opentelemetry/api@1.9.1)
+        specifier: ^0.4.2
+        version: 0.4.2(@cloudflare/workers-types@4.20260613.1)(@opentelemetry/api@1.9.1)
       '@hono/zod-openapi':
         specifier: ^1.5.1
         version: 1.5.1(hono@4.12.25)(zod@4.4.3)
       '@openrouter/ai-sdk-provider':
         specifier: ^2.9.1
         version: 2.9.1(ai@6.0.205(zod@4.4.3))(zod@4.4.3)
+      '@phosphor-icons/react':
+        specifier: ^2.1.10
+        version: 2.1.10(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       ai:
         specifier: ^6.0.205
         version: 6.0.205(zod@4.4.3)
@@ -69,6 +72,9 @@ importers:
       concurrently:
         specifier: ^9.0.0
         version: 9.2.1
+      reveal.js:
+        specifier: 5.1.0
+        version: 5.1.0
       typescript:
         specifier: ^5.7.0
         version: 5.9.3
@@ -212,17 +218,27 @@ packages:
     resolution: {integrity: sha512-4zBIxpPzowiZpusoFkyGVwakdRJUyuH5PxQ/PrqghfdFWWasvnCdPfQXHrenDai+gyLARulZjZowCOj6fjT4pA==}
     engines: {node: '>=6.9.0'}
 
-  '@clawnify/app@0.1.0':
-    resolution: {integrity: sha512-U0m4EzjXlesnjDfx7rVF7sgb4JwnENlelJ2mQPwGoCxKYTTzNwhQcpjMdfq71RD6eNJ1/EGe6qEYIRWv/1xxLQ==}
+  '@clawnify/app@0.2.1':
+    resolution: {integrity: sha512-t6fx4rnbEAewU3fH/WGKfWhfhZgVbLp1JgnpCR0YSHaE6rYwxEmgHAYlN3q5gSjYutsWmXANFqro3wuyxWZlTA==}
     peerDependencies:
       '@hono/zod-openapi': '>=0.18 <1'
+      '@phosphor-icons/react': '>=2'
       hono: '*'
+      react: '>=18'
+    peerDependenciesMeta:
+      '@phosphor-icons/react':
+        optional: true
+      react:
+        optional: true
 
   '@clawnify/db@0.4.1':
     resolution: {integrity: sha512-Ck9RGqEElt6P/3S9quxvr2MIg8mZk1n9wFftH3PpGPFnpA6hbk0td67oaioeMRuDCn7vePcJCeyYEkbvNVYy/g==}
 
-  '@clawnify/routes@0.2.1':
-    resolution: {integrity: sha512-syrH1Sk4uxXVI9Yo76yLrccAEpcwAUDxvxL3/K+QnLHFetPU/RaterpwXNbzonA2gtY7xBmYfJ66mgEw280HaQ==}
+  '@clawnify/db@0.4.2':
+    resolution: {integrity: sha512-s+G/5bDVFx7Na8WVETfl8EhyPcbmgs5LIE1TsM0vGUOAtPihQGlVX1xpfmg5lsMv8+OChKaHsZIMnzpXY8pyAw==}
+
+  '@clawnify/routes@0.2.2':
+    resolution: {integrity: sha512-+s7gjRyH8bmIUHQDHmmwGyUeEcV5m+IoWEYr2tLiWdVW7WKlFlgeKIuJ61vW9mc9k4TizL+B+Tg8qJ72zAbvOA==}
     peerDependencies:
       '@hono/zod-openapi': '>=0.18 <1'
       hono: '*'
@@ -803,6 +819,13 @@ packages:
   '@opentelemetry/api@1.9.1':
     resolution: {integrity: sha512-gLyJlPHPZYdAk1JENA9LeHejZe1Ti77/pTeFm/nMXmQH/HFZlcS/O2XJB+L8fkbrNSqhdtlvjBVjxwUYanNH5Q==}
     engines: {node: '>=8.0.0'}
+
+  '@phosphor-icons/react@2.1.10':
+    resolution: {integrity: sha512-vt8Tvq8GLjheAZZYa+YG/pW7HDbov8El/MANW8pOAz4eGxrwhnbfrQZq0Cp4q8zBEu8NIhHdnr+r8thnfRSNYA==}
+    engines: {node: '>=10'}
+    peerDependencies:
+      react: '>= 16.8'
+      react-dom: '>= 16.8'
 
   '@poppinss/colors@4.1.6':
     resolution: {integrity: sha512-H9xkIdFswbS8n1d6vmRd8+c10t2Qe+rZITbbDHHkQixH5+2x1FDGmi/0K+WgWiqQFKPSlIYB7jlH6Kpfn6Fleg==}
@@ -2048,6 +2071,10 @@ packages:
     resolution: {integrity: sha512-Xf0nWe6RseziFMu+Ap9biiUbmplq6S9/p+7w7YXP/JBHhrUDDUhwa+vANyubuqfZWTveU//DYVGsDG7RKL/vEw==}
     engines: {node: '>=0.10.0'}
 
+  reveal.js@5.1.0:
+    resolution: {integrity: sha512-KDt7m0+xwKV6nAZt4CNPVFBf42sTKRQapg0bGGKB5PKO5XvChnMfwlZkybydHiQJ7p5+6LbHKRGrhXODdoNIaA==}
+    engines: {node: '>=18.0.0'}
+
   robust-predicates@3.0.3:
     resolution: {integrity: sha512-NS3levdsRIUOmiJ8FZWCP7LG3QpJyrs/TE0Zpf1yvZu8cAJJ6QMW92H1c7kWpdIHo8RvmLxN/o2JXTKHp74lUA==}
 
@@ -2532,12 +2559,15 @@ snapshots:
       '@babel/helper-string-parser': 7.29.7
       '@babel/helper-validator-identifier': 7.29.7
 
-  '@clawnify/app@0.1.0(@cloudflare/workers-types@4.20260613.1)(@hono/zod-openapi@1.5.1(hono@4.12.25)(zod@4.4.3))(@opentelemetry/api@1.9.1)(hono@4.12.25)':
+  '@clawnify/app@0.2.1(@cloudflare/workers-types@4.20260613.1)(@hono/zod-openapi@1.5.1(hono@4.12.25)(zod@4.4.3))(@opentelemetry/api@1.9.1)(@phosphor-icons/react@2.1.10(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(hono@4.12.25)(react@19.2.7)':
     dependencies:
       '@clawnify/db': 0.4.1(@cloudflare/workers-types@4.20260613.1)(@opentelemetry/api@1.9.1)
-      '@clawnify/routes': 0.2.1(@hono/zod-openapi@1.5.1(hono@4.12.25)(zod@4.4.3))(hono@4.12.25)
+      '@clawnify/routes': 0.2.2(@hono/zod-openapi@1.5.1(hono@4.12.25)(zod@4.4.3))(hono@4.12.25)
       '@hono/zod-openapi': 1.5.1(hono@4.12.25)(zod@4.4.3)
       hono: 4.12.25
+    optionalDependencies:
+      '@phosphor-icons/react': 2.1.10(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
+      react: 19.2.7
     transitivePeerDependencies:
       - '@aws-sdk/client-rds-data'
       - '@cloudflare/workers-types'
@@ -2603,7 +2633,41 @@ snapshots:
       - sql.js
       - sqlite3
 
-  '@clawnify/routes@0.2.1(@hono/zod-openapi@1.5.1(hono@4.12.25)(zod@4.4.3))(hono@4.12.25)':
+  '@clawnify/db@0.4.2(@cloudflare/workers-types@4.20260613.1)(@opentelemetry/api@1.9.1)':
+    dependencies:
+      drizzle-orm: 0.45.2(@cloudflare/workers-types@4.20260613.1)(@opentelemetry/api@1.9.1)
+    transitivePeerDependencies:
+      - '@aws-sdk/client-rds-data'
+      - '@cloudflare/workers-types'
+      - '@electric-sql/pglite'
+      - '@libsql/client'
+      - '@libsql/client-wasm'
+      - '@neondatabase/serverless'
+      - '@op-engineering/op-sqlite'
+      - '@opentelemetry/api'
+      - '@planetscale/database'
+      - '@prisma/client'
+      - '@tidbcloud/serverless'
+      - '@types/better-sqlite3'
+      - '@types/pg'
+      - '@types/sql.js'
+      - '@upstash/redis'
+      - '@vercel/postgres'
+      - '@xata.io/client'
+      - better-sqlite3
+      - bun-types
+      - expo-sqlite
+      - gel
+      - knex
+      - kysely
+      - mysql2
+      - pg
+      - postgres
+      - prisma
+      - sql.js
+      - sqlite3
+
+  '@clawnify/routes@0.2.2(@hono/zod-openapi@1.5.1(hono@4.12.25)(zod@4.4.3))(hono@4.12.25)':
     dependencies:
       '@hono/zod-openapi': 1.5.1(hono@4.12.25)(zod@4.4.3)
       hono: 4.12.25
@@ -2963,6 +3027,11 @@ snapshots:
       zod: 4.4.3
 
   '@opentelemetry/api@1.9.1': {}
+
+  '@phosphor-icons/react@2.1.10(react-dom@19.2.7(react@19.2.7))(react@19.2.7)':
+    dependencies:
+      react: 19.2.7
+      react-dom: 19.2.7(react@19.2.7)
 
   '@poppinss/colors@4.1.6':
     dependencies:
@@ -4044,6 +4113,8 @@ snapshots:
   require-directory@2.1.1: {}
 
   require-from-string@2.0.2: {}
+
+  reveal.js@5.1.0: {}
 
   robust-predicates@3.0.3: {}
 
