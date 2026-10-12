@@ -1535,7 +1535,7 @@ function FieldInput({ field, value, onChange, compact }: { field: Field; value: 
     return (
       <label className="flex items-center gap-2 text-xs text-neutral-600">
         <input type="checkbox" checked={!!value} onChange={(e) => onChange(e.target.checked)} className="accent-neutral-900" />
-        <code className="text-[11px]">{field.name}</code> <span className="text-[10px] text-neutral-400">shows its part when on</span>
+        <code className="text-[11px]">{field.name}</code> <span className="text-[10px] text-neutral-400">switches an optional part</span>
       </label>
     );
   }

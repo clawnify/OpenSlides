@@ -123,6 +123,63 @@ describe("fillTemplate", () => {
   });
 });
 
+describe("values as callers send them", () => {
+  it("reads an outer value inside a row only when asked with @root", () => {
+    const tpl = `<tr data-each="rows"><td>{{amount}} {{@root.currency}}</td></tr>`;
+    const r = fillTemplate(tpl, { currency: "EUR", rows: [{ amount: "10" }, { amount: "20" }] }, { strict: true });
+    expect(r.missing).toEqual([]);
+    expect(r.html).toBe(`<tr data-each="rows"><td>10 EUR</td></tr><tr data-each="rows"><td>20 EUR</td></tr>`);
+    // Still no silent fallback: a plain {{currency}} in the row is the item's own field.
+    expect(fillTemplate(`<p data-each="rows">{{currency}}</p>`, { currency: "EUR", rows: [{}] }, { strict: true }).missing).toEqual(["rows[0].currency"]);
+    // A missing @root value is reported by its top-level path.
+    expect(fillTemplate(tpl, { rows: [{ amount: "1" }] }, { strict: true }).missing).toEqual(["currency"]);
+  });
+
+  it("accepts @root in data-if, data-unless and data-each", () => {
+    const tpl = `<div data-each="rows"><b data-if="@root.vip">VIP</b><i data-unless="@root.vip">std</i><u data-each="@root.tags">{{.}}</u></div>`;
+    const r = fillTemplate(tpl, { vip: true, tags: ["a"], rows: [{}] }, { strict: true });
+    expect(r.html.replace(/ data-\w+="[^"]*"/g, "")).toBe("<div><b>VIP</b><u>a</u></div>");
+  });
+
+  it("fills a dotted name from a flat key, nested first", () => {
+    expect(fillTemplate(`<p>{{client.name}}</p>`, { "client.name": "Flat" }, { strict: true }).html).toBe("<p>Flat</p>");
+    expect(fillTemplate(`<p>{{client.name}}</p>`, { client: { name: "Nested" }, "client.name": "Flat" }, { strict: true }).html).toBe("<p>Nested</p>");
+    expect(fillTemplate(`<li data-each="plan.items">{{.}}</li>`, { "plan.items": ["x"] }, { strict: true }).html).toBe(`<li data-each="plan.items">x</li>`);
+  });
+
+  it("prints an explicit null as nothing, but still fails on an absent key", () => {
+    const tpl = `<p>[{{a}}]</p><p>[{{client.name}}]</p><i data-each="rows">{{.}}</i>`;
+    const r = fillTemplate(tpl, { a: null, client: null, rows: null }, { strict: true });
+    expect(r.missing).toEqual([]);
+    expect(r.html).toBe("<p>[]</p><p>[]</p>");
+    expect(fillTemplate(`<p>{{a}}</p>`, {}, { strict: true }).missing).toEqual(["a"]);
+    // A null item in a list of strings prints nothing too.
+    expect(fillTemplate(`<i data-each="xs">[{{.}}]</i>`, { xs: ["a", null] }, { strict: true }).html).toBe(`<i data-each="xs">[a]</i><i data-each="xs">[]</i>`);
+  });
+
+  it("treats the strings false and 0 as false in data-if", () => {
+    const tpl = `<p data-if="a">A</p><p data-if="b">B</p><p data-if="c">C</p><p data-if="d">D</p><p data-if="e">E</p>`;
+    const r = fillTemplate(tpl, { a: "false", b: " FALSE ", c: "0", d: "no", e: "   " }, { strict: true });
+    expect(r.html).toBe(`<p data-if="d">D</p>`);
+  });
+
+  it("keeps line breaks in page text, escaped, but not in attributes", () => {
+    const r = fillTemplate(`<p title="{{a}}">{{a}}</p>`, { a: "12 Quay St\r\nRotterdam\n<b>" }, { strict: true });
+    expect(r.html).toBe(`<p title="12 Quay St\r\nRotterdam\n&lt;b&gt;">12 Quay St<br>Rotterdam<br>&lt;b&gt;</p>`);
+  });
+
+  it("shows a data-unless element only when its value is not set", () => {
+    const tpl = `<p data-unless="discount">No discount</p>`;
+    expect(fillTemplate(tpl, {}, { strict: true }).html).toBe(tpl);
+    expect(fillTemplate(tpl, { discount: "" }, { strict: true }).html).toBe(tpl);
+    expect(fillTemplate(tpl, { discount: "10%" }, { strict: true }).html).toBe("");
+  });
+
+  it("never resolves a name to a built-in property", () => {
+    expect(fillTemplate(`<p>{{toString}}</p>`, {}, { strict: true }).missing).toEqual(["toString"]);
+  });
+});
+
 describe("fillPages", () => {
   it("reports each gap once across pages", () => {
     const r = fillPages([`<p>{{a}}</p>`, `<p>{{a}} {{b}}</p>`], { b: "B" }, { strict: true });
@@ -156,6 +213,22 @@ describe("collectFields", () => {
     expect(collectFields([`<p data-if="show_terms">Terms</p>`]).fields).toEqual([{ name: "show_terms", type: "flag", optional: true }]);
   });
 
+  it("lists a data-unless name as an optional flag and guards its content", () => {
+    expect(collectFields([`<p data-unless="discount">No discount for {{client}}</p>`]).fields).toEqual([
+      { name: "discount", type: "flag", optional: true },
+      { name: "client", type: "text", optional: true },
+    ]);
+  });
+
+  it("lists an @root reference inside a row as a top-level value, not an item field", () => {
+    const { fields, problems } = collectFields([`<tr data-each="rows"><td>{{amount}} {{@root.currency}}</td></tr>`]);
+    expect(problems).toEqual([]);
+    expect(fields).toEqual([
+      { name: "rows", type: "list", optional: false, fields: [{ name: "amount", type: "text", optional: false }] },
+      { name: "currency", type: "text", optional: false },
+    ]);
+  });
+
   it("flags malformed syntax", () => {
     const { problems } = collectFields([`<p>{{ client name }}</p><p>{{.}}</p><div data-each="9x"></div>`]);
     expect(problems).toHaveLength(3);
@@ -187,5 +260,14 @@ describe("helpers", () => {
   it("names top-level keys no page uses", () => {
     const { fields } = collectFields([QUOTE]);
     expect(unusedKeys(fields, { client: {}, totl: "1" })).toEqual(["totl"]);
+  });
+
+  it("does not report a flat dotted key as unused", () => {
+    const { fields } = collectFields([QUOTE]);
+    expect(unusedKeys(fields, { "client.name": "A", "client.nmae": "B" })).toEqual(["client.nmae"]);
+  });
+
+  it("spots data-unless as template syntax", () => {
+    expect(hasTemplate(`<p data-unless="x">`)).toBe(true);
   });
 });

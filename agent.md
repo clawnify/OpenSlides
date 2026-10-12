@@ -177,7 +177,9 @@ then renders any number of finished PDFs from data, without editing the deck.
 |------|-------|
 | `{{client.name}}` | a value, in text or inside an attribute (`<img src="{{client.logo}}">`). Dots group related values. |
 | `<tr data-each="line_items">` | repeat this element once per item of the list `line_items`. Inside it, names refer to **the item only**. |
-| `<p data-if="discount_note">` | keep this element only when `discount_note` is set (absent, empty, `false`, `0` or `[]` hides it). |
+| `{{@root.currency}}` | a top-level value, read from anywhere, including inside a `data-each` row. |
+| `<p data-if="discount_note">` | keep this element only when `discount_note` is set. Absent, `null`, empty, `false`, `0`, `[]` and the strings `"false"` and `"0"` hide it. |
+| `<p data-unless="discount_note">` | the opposite: keep this element only when `discount_note` is **not** set. |
 
 ```html
 <table>
@@ -200,13 +202,19 @@ Rules:
   table gets moved out of it.
 - **Inside a `data-each` element, names never fall back to outer values.** The
   row's `{{total}}` above is the line total; the grand `{{total}}` sits outside the
-  row. A row without its own `total` is an error, not the grand total.
+  row. A row without its own `total` is an error, not the grand total. To show an
+  outer value in a row, say so: `{{@root.currency}}`.
   `{{.}}` is the item itself, for a list of plain strings.
 - **Values arrive formatted.** The template does no maths and no formatting: send
   `"€1,500.00 / month"`, not `1500`. Totals are computed by whoever calls render.
 - `data-if` and `data-each` on one element: `data-if` decides whether it appears
   at all, then `data-each` repeats it, which is how an **optional list** works.
-- Values are HTML-escaped. An image value is an https URL.
+- Values are HTML-escaped, and a line break in a value prints as a line break
+  (an address on several lines). An image value is an https URL.
+- Send values nested (`{ "client": { "name": … } }`) or as flat dotted keys
+  (`{ "client.name": … }`); both fill `{{client.name}}`.
+- An explicit `null` prints nothing (and a `null` list renders no rows). A key
+  you leave out is still a missing value.
 - Text that never changes (the terms) stays literal in the page.
 - When you edit a page that holds `{{tokens}}`, keep every token **verbatim**.
 

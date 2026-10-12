@@ -484,7 +484,7 @@ export function revealDoc(opts: DocOpts): string {
   body.sv-on-flow .brand-logo { display: none; }
   /* Template markers, editor only: {{tokens}} highlighted, repeated and optional elements outlined. */
   ::highlight(tpl-var) { background-color: rgba(245, 158, 11, .32); }
-  body:not(.sv-presenting):not(.sv-preview) .reveal .slides :is([data-each], [data-if]) { outline: 2px dashed rgba(217, 119, 6, .55); outline-offset: 2px; }`}`;
+  body:not(.sv-presenting):not(.sv-preview) .reveal .slides :is([data-each], [data-if], [data-unless]) { outline: 2px dashed rgba(217, 119, 6, .55); outline-offset: 2px; }`}`;
 
   // The base theme provides layout/sizing rules; the brand head overrides the
   // reveal --r-* color/font variables on top of it.

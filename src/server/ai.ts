@@ -141,7 +141,9 @@ prospect), mark what changes per copy instead of writing one example:
 - \`data-each="line_items"\` on the element that repeats (a <tr>, an <li>, a card).
   Inside it, names refer to the ITEM only:
   \`<tr data-each="line_items"><td>{{name}}</td><td>{{total}}</td></tr>\`.
-- \`data-if="discount_note"\` on an element that shows only when that value is set.
+  To show an outer value in every row, write \`{{@root.currency}}\`.
+- \`data-if="discount_note"\` on an element that shows only when that value is
+  set; \`data-unless="discount_note"\` for one that shows only when it is not.
 - Put structure in those attributes, never as {{#section}} tags.
 - Values arrive formatted: never compute totals or format currency in the page.
 - Text that never changes (the terms) stays literal.

@@ -1,9 +1,11 @@
 // Template variables: the parts of a deck or document that change per copy.
 //
-//   {{client.name}}             a value, in text or inside an attribute
-//   <tr data-each="line_items"> repeat this element once per item of a list;
-//                               inside it, names refer to the item
-//   <p data-if="discount_note"> keep this element only when the value is set
+//   {{client.name}}              a value, in text or inside an attribute
+//   <tr data-each="line_items">  repeat this element once per item of a list;
+//                                inside it, names refer to the item
+//   {{@root.currency}}           an outer (top-level) value, from anywhere
+//   <p data-if="discount_note">  keep this element only when the value is set
+//   <p data-unless="discount">   keep this element only when the value is NOT set
 //
 // Structure lives in attributes rather than in {{#section}} tags on purpose: the
 // editor re-serializes a page through the browser's HTML parser on every
@@ -13,7 +15,11 @@
 // Inside a repeated element names resolve against the item ONLY, never an outer
 // value. Mustache falls back outward, which in a quote turns a row's missing
 // {{total}} into the grand {{total}} printed on every line. Here that gap is an
-// error instead.
+// error instead; a row that wants an outer value says so with {{@root.name}}.
+//
+// Values as callers send them: `client.name` resolves nested first, then as a
+// literal flat key ({"client.name": …}). An explicit null prints nothing (an
+// absent key is still a gap), and line breaks in a value print as line breaks.
 //
 // Plain string scanning, no DOM, no dependencies: the same module fills
 // documents in the Worker (render API, preview, PDF export) and lists a page's
@@ -23,9 +29,9 @@
 export interface Field {
   /** Dotted path: `client.name`. Inside a list, relative to the item. */
   name: string;
-  /** text = a string or number · list = repeated items · flag = only switches a data-if element. */
+  /** text = a string or number · list = repeated items · flag = only switches a data-if / data-unless element. */
   type: "text" | "list" | "flag";
-  /** Every use sits inside a data-if element (or is the data-if itself), so leaving it out hides that part instead of failing. */
+  /** Every use sits inside a data-if / data-unless element (or is that switch itself), so leaving it out hides or shows that part instead of failing. */
   optional: boolean;
   /** A list's item fields. A list of plain strings has one field named `.` */
   fields?: Field[];
@@ -50,14 +56,18 @@ export class TemplateTooLargeError extends Error {
 const MAX_OUTPUT = 4 * 1024 * 1024;
 
 const NAME = "[A-Za-z_][\\w-]*(?:\\.[A-Za-z_][\\w-]*)*";
-const TOKEN_RE = new RegExp(`\\{\\{\\s*(\\.|${NAME})\\s*\\}\\}`, "g");
-const WHOLE_TOKEN_RE = new RegExp(`^\\{\\{\\s*(\\.|${NAME})\\s*\\}\\}$`);
+const ROOT = "@root.";
+// A reference: a name, optionally anchored at the top-level values.
+const REF = `(?:@root\\.)?${NAME}`;
+const TOKEN_RE = new RegExp(`\\{\\{\\s*(\\.|${REF})\\s*\\}\\}`, "g");
+const WHOLE_TOKEN_RE = new RegExp(`^\\{\\{\\s*(\\.|${REF})\\s*\\}\\}$`);
 const ANY_BRACES_RE = /\{\{[^{}]*\}\}/g;
 const NAME_RE = new RegExp(`^${NAME}$`);
+const REF_RE = new RegExp(`^${REF}$`);
 
 /** Cheap check: does this content use any template syntax at all? */
 export function hasTemplate(content: string): boolean {
-  return /\{\{|\sdata-(?:each|if)\s*=/.test(content);
+  return /\{\{|\sdata-(?:each|if|unless)\s*=/.test(content);
 }
 
 /** True when `name` is usable as a variable name (`client.name`, `total`). */
@@ -70,7 +80,7 @@ export function isValidName(name: string): boolean {
 type Node =
   | { kind: "text"; text: string }
   | { kind: "raw"; text: string } // comments, doctypes, script/style bodies: never substituted
-  | { kind: "el"; name: string; start: string; end: string; children: Node[]; each: string | null; cond: string | null };
+  | { kind: "el"; name: string; start: string; end: string; children: Node[]; each: string | null; cond: string | null; unless: string | null };
 
 type El = Extract<Node, { kind: "el" }>;
 
@@ -121,7 +131,7 @@ function startTagEnd(src: string, i: number): number {
 }
 
 function parse(src: string): Node[] {
-  const root: El = { kind: "el", name: "#root", start: "", end: "", children: [], each: null, cond: null };
+  const root: El = { kind: "el", name: "#root", start: "", end: "", children: [], each: null, cond: null, unless: null };
   const stack: El[] = [root];
   const push = (n: Node) => stack[stack.length - 1].children.push(n);
 
@@ -191,7 +201,10 @@ function parse(src: string): Node[] {
     const implied = IMPLIED[name];
     if (implied) implicitlyClose(implied.closes, implied.until);
 
-    const el: El = { kind: "el", name, start, end: "", children: [], each: attrValue(start, "data-each"), cond: attrValue(start, "data-if") };
+    const el: El = {
+      kind: "el", name, start, end: "", children: [],
+      each: attrValue(start, "data-each"), cond: attrValue(start, "data-if"), unless: attrValue(start, "data-unless"),
+    };
     push(el);
     if (VOID.has(name) || /\/\s*>$/.test(start)) continue;
     if (RAW_TEXT.has(name)) {
@@ -223,6 +236,8 @@ interface Ctx {
   missing: Set<string>;
   invalid: Set<string>;
   size: number;
+  /** The top-level values, what {{@root.name}} reads from inside a row. */
+  root: Scope;
 }
 
 const ESCAPES: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
@@ -232,35 +247,71 @@ const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "obj
 
 const joinPath = (base: string, rest: string) => (base ? `${base}.${rest}` : rest);
 
-/** Resolve `a.b.c` against the current scope (the item inside data-each, else the root values). */
-function lookup(expr: string, scope: Scope): { found: boolean; value: unknown; path: string } {
-  if (expr === ".") return { found: scope.item && scope.value !== undefined && scope.value !== null, value: scope.value, path: scope.path || "." };
-  let v: unknown = scope.value;
-  for (const part of expr.split(".")) {
-    if (!isObject(v)) return { found: false, value: undefined, path: joinPath(scope.path, expr) };
+const own = (o: Record<string, unknown>, k: string) => Object.prototype.hasOwnProperty.call(o, k);
+
+/**
+ * Resolve a dotted path in one object: nested first (`client` then `name`),
+ * then as a literal flat key (`"client.name"`). Own properties only, so a name
+ * like `toString` never reaches a built-in. An explicit null part-way along the
+ * path makes the whole value an explicit null.
+ */
+function resolvePath(obj: unknown, path: string): { present: boolean; value: unknown } {
+  let v: unknown = obj;
+  let nested = true;
+  for (const part of path.split(".")) {
+    if (v === null) return { present: true, value: null };
+    if (!isObject(v) || !own(v, part)) {
+      nested = false;
+      break;
+    }
     v = v[part];
   }
-  return { found: v !== undefined && v !== null, value: v, path: joinPath(scope.path, expr) };
+  if (nested && v !== undefined) return { present: true, value: v };
+  if (isObject(obj) && own(obj, path) && obj[path] !== undefined) return { present: true, value: obj[path] };
+  return { present: false, value: undefined };
 }
 
+/**
+ * Resolve a reference against the current scope (the item inside data-each,
+ * else the top-level values), or against the top-level values for `@root.…`.
+ * `found` means the caller provided the key, even as an explicit null.
+ */
+function lookup(expr: string, scope: Scope, ctx: Ctx): { found: boolean; value: unknown; path: string } {
+  if (expr === ".") return { found: scope.item && scope.value !== undefined, value: scope.value, path: scope.path || "." };
+  const base = expr.startsWith(ROOT) ? ctx.root : scope;
+  const path = expr.startsWith(ROOT) ? expr.slice(ROOT.length) : expr;
+  const r = resolvePath(base.value, path);
+  return { found: r.present, value: r.value, path: joinPath(base.path, path) };
+}
+
+// Empty, false, 0 and [] hide a data-if element. Strings "false" and "0" count
+// as false too: forms and CRMs send flags and numbers as text.
 function truthy(v: unknown): boolean {
   if (Array.isArray(v)) return v.length > 0;
-  return !(v === undefined || v === null || v === false || v === "" || v === 0);
+  if (typeof v === "string") {
+    const s = v.trim().toLowerCase();
+    return s !== "" && s !== "false" && s !== "0";
+  }
+  return !(v === undefined || v === null || v === false || v === 0);
 }
 
-function substitute(text: string, scope: Scope, ctx: Ctx): string {
+// `inText`: a value printed as page text keeps its line breaks; inside an
+// attribute it is only escaped.
+function substitute(text: string, scope: Scope, ctx: Ctx, inText: boolean): string {
   return text.replace(TOKEN_RE, (whole, expr: string) => {
     if (expr === "." && !scope.item) {
       ctx.invalid.add("{{.}} only works inside a data-each element");
       return whole;
     }
-    const r = lookup(expr, scope);
+    const r = lookup(expr, scope, ctx);
     if (!r.found) {
       if (ctx.strict) ctx.missing.add(r.path);
       return whole; // lenient: keep the token visible so the gap shows
     }
+    if (r.value === null) return ""; // an explicit null is an intentional blank
     if (typeof r.value === "string" || typeof r.value === "number" || typeof r.value === "boolean") {
-      return escapeHtml(String(r.value));
+      const out = escapeHtml(String(r.value));
+      return inText ? out.replace(/\r\n|\r|\n/g, "<br>") : out;
     }
     ctx.invalid.add(`${r.path}: expected text, got ${Array.isArray(r.value) ? "a list" : "an object"}`);
     return whole;
@@ -276,7 +327,7 @@ function emit(ctx: Ctx, s: string): string {
 function renderNodes(nodes: Node[], scope: Scope, ctx: Ctx): string {
   let out = "";
   for (const n of nodes) {
-    if (n.kind === "text") out += emit(ctx, substitute(n.text, scope, ctx));
+    if (n.kind === "text") out += emit(ctx, substitute(n.text, scope, ctx, true));
     else if (n.kind === "raw") out += emit(ctx, n.text);
     else out += renderEl(n, scope, ctx);
   }
@@ -284,7 +335,7 @@ function renderNodes(nodes: Node[], scope: Scope, ctx: Ctx): string {
 }
 
 function renderOnce(el: El, scope: Scope, ctx: Ctx): string {
-  return emit(ctx, substitute(el.start, scope, ctx)) + renderNodes(el.children, scope, ctx) + emit(ctx, el.end);
+  return emit(ctx, substitute(el.start, scope, ctx, false)) + renderNodes(el.children, scope, ctx) + emit(ctx, el.end);
 }
 
 function renderEl(el: El, scope: Scope, ctx: Ctx): string {
@@ -292,12 +343,16 @@ function renderEl(el: El, scope: Scope, ctx: Ctx): string {
   // it. An absent value hides the element in both modes, so the preview shows
   // what the real document will (the template view, unfilled, shows it all).
   if (el.cond !== null) {
-    const r = lookup(el.cond, scope);
+    const r = lookup(el.cond, scope, ctx);
     if (!(r.found && truthy(r.value))) return "";
+  }
+  if (el.unless !== null) {
+    const r = lookup(el.unless, scope, ctx);
+    if (r.found && truthy(r.value)) return "";
   }
   if (el.each === null) return renderOnce(el, scope, ctx);
 
-  const r = lookup(el.each, scope);
+  const r = lookup(el.each, scope, ctx);
   // Lenient with no usable list: one template row with an empty item, so the
   // row's own {{tokens}} stay visible.
   const templateRow = () => renderOnce(el, { value: {}, path: `${r.path}[0]`, item: true }, ctx);
@@ -306,6 +361,7 @@ function renderEl(el: El, scope: Scope, ctx: Ctx): string {
     ctx.missing.add(r.path);
     return "";
   }
+  if (r.value === null) return ""; // an explicit null list is an empty list
   if (!Array.isArray(r.value)) {
     ctx.invalid.add(`${r.path}: expected a list`);
     return ctx.strict ? "" : templateRow();
@@ -331,8 +387,9 @@ function renderEl(el: El, scope: Scope, ctx: Ctx): string {
  * must fail, not quietly print the sample's client name.
  */
 export function fillTemplate(template: string, values: unknown, opts: { strict: boolean }): FillResult {
-  const ctx: Ctx = { strict: opts.strict, missing: new Set(), invalid: new Set(), size: 0 };
-  const html = renderNodes(parse(template), { value: isObject(values) ? values : {}, path: "", item: false }, ctx);
+  const root: Scope = { value: isObject(values) ? values : {}, path: "", item: false };
+  const ctx: Ctx = { strict: opts.strict, missing: new Set(), invalid: new Set(), size: 0, root };
+  const html = renderNodes(parse(template), root, ctx);
   return { html, missing: [...ctx.missing], invalid: [...ctx.invalid] };
 }
 
@@ -360,34 +417,39 @@ interface Use {
 }
 
 function collectUses(nodes: Node[], lists: string[], guarded: boolean, uses: Use[], problems: Set<string>): void {
-  const tokens = (text: string, g: boolean) => {
+  // A reference anchored at the top level (`@root.x`) is a top-level value
+  // wherever it appears, even inside a row.
+  const use = (ref: string, type: Field["type"], g: boolean, at: string[]) => {
+    if (ref.startsWith(ROOT)) uses.push({ name: ref.slice(ROOT.length), type, guarded: g, lists: [] });
+    else uses.push({ name: ref, type, guarded: g, lists: at });
+  };
+  const tokens = (text: string, g: boolean, at: string[]) => {
     for (const m of text.matchAll(ANY_BRACES_RE)) {
       const t = m[0].match(WHOLE_TOKEN_RE);
       if (!t) problems.add(`"${m[0]}" is not a variable: use letters, digits, _ and dots, e.g. {{client.name}}`);
-      else if (t[1] === "." && !lists.length) problems.add("{{.}} only works inside a data-each element");
-      else uses.push({ name: t[1], type: "text", guarded: g, lists });
+      else if (t[1] === "." && !at.length) problems.add("{{.}} only works inside a data-each element");
+      else use(t[1], "text", g, at);
     }
   };
   for (const n of nodes) {
-    if (n.kind === "text") tokens(n.text, guarded);
+    if (n.kind === "text") tokens(n.text, guarded, lists);
     else if (n.kind === "el") {
       let g = guarded;
-      if (n.cond !== null) {
-        if (isValidName(n.cond)) uses.push({ name: n.cond, type: "flag", guarded: true, lists });
-        else problems.add(`data-if="${n.cond}" is not a valid variable name`);
+      for (const [attr, ref] of [["data-if", n.cond], ["data-unless", n.unless]] as const) {
+        if (ref === null) continue;
+        if (REF_RE.test(ref)) use(ref, "flag", true, lists);
+        else problems.add(`${attr}="${ref}" is not a valid variable name`);
         g = true;
       }
       let inner = lists;
       if (n.each !== null) {
-        if (isValidName(n.each)) {
-          uses.push({ name: n.each, type: "list", guarded: g, lists });
-          inner = [...lists, n.each];
+        if (REF_RE.test(n.each)) {
+          use(n.each, "list", g, lists);
+          inner = n.each.startsWith(ROOT) ? [n.each.slice(ROOT.length)] : [...lists, n.each];
         } else problems.add(`data-each="${n.each}" is not a valid variable name`);
       }
       // The element's own attributes are filled per item too, so they read from the inner scope.
-      const before = uses.length;
-      tokens(n.start, g);
-      for (let k = before; k < uses.length; k++) uses[k] = { ...uses[k], lists: inner };
+      tokens(n.start, g, inner);
       collectUses(n.children, inner, g, uses, problems);
     }
   }
@@ -498,9 +560,10 @@ export function exampleValues(fields: Field[], sample: unknown): Record<string, 
   return exampleObject(fields, isObject(sample) ? sample : {});
 }
 
-/** Top-level keys a caller sent that no page uses: most likely a typo. */
+/** Top-level keys a caller sent that no page uses: most likely a typo. A flat key (`"client.name"`) counts as used. */
 export function unusedKeys(fields: Field[], values: unknown): string[] {
   if (!isObject(values)) return [];
   const heads = new Set(fields.map((f) => f.name.split(".")[0]));
-  return Object.keys(values).filter((k) => !heads.has(k));
+  const names = new Set(fields.map((f) => f.name));
+  return Object.keys(values).filter((k) => !heads.has(k) && !names.has(k));
 }
