@@ -15,7 +15,29 @@
 
 const REVEAL = "https://cdn.jsdelivr.net/npm/reveal.js@5.1.0";
 
-import { printScale, type PageFormat } from "./formats";
+import { flowMargin, printScale, type PageFormat } from "./formats";
+
+/** The `<!-- .slide: ATTRS -->` attributes of a slide chunk, and the markup after them. */
+export function slideParts(chunk: string): { attrs: string; body: string } {
+  let body = chunk.trim().replace(/^<!--\s*html\s*-->\s*\n?/i, "");
+  let attrs = "";
+  const m = body.match(/^<!--\s*\.slide:\s*([\s\S]*?)-->\s*\n?/i);
+  if (m) {
+    attrs = m[1].trim();
+    body = body.slice(m[0].length);
+  }
+  return { attrs, body };
+}
+
+/**
+ * A continuing page (`<!-- .slide: data-flow -->`) is not a fixed canvas: its
+ * content runs onto as many physical pages as it needs in the PDF, for long
+ * terms or a line-item table of any length. Its markup is normal-flow HTML
+ * (no `position:absolute;inset:0` wrapper).
+ */
+export function isFlowAttrs(attrs: string): boolean {
+  return /(^|\s)data-flow(?=[\s=]|$)/i.test(attrs);
+}
 
 // Deterministic, dependency-free SVG charts. A slide includes a chart with:
 //   <div class="chart" style="height:..." data-chart='{"type":"bar","labels":[...],"data":[...]}'></div>
@@ -111,6 +133,7 @@ interface DocOpts {
   v?: number;
   only?: number; // render just this slide (for Pages thumbnails)
   thumb?: boolean; // chrome-less, non-interactive (thumbnail)
+  preview?: boolean; // filled with sample values: read-only, no template markers
   // Pagination is a single mutually-exclusive mode:
   //   dots    — centered dots paginator (present-only)
   //   arrows  — arrow controls + progress bar (present-only)
@@ -134,23 +157,35 @@ function buildPrintDoc(opts: DocOpts): string {
   const chunks = splitSlides(opts.content);
   const total = chunks.length;
   const clean = (s: string) => s.replace(/["<>]/g, "");
+  const parts = chunks.map(slideParts);
+  // A continuing page spans an unknown number of physical pages, so "3 / 7"
+  // can't be computed here: a deck with one prints no page numbers.
+  const hasFlow = parts.some((p) => isFlowAttrs(p.attrs));
+  const gap = Math.round(flowMargin(f) * scale * 100) / 100; // page px
   const slides =
-    chunks
-      .map((chunk, i) => {
-        let rest = chunk.trim().replace(/^<!--\s*html\s*-->\s*\n?/i, "");
-        let bg = "";
-        const m = rest.match(/^<!--\s*\.slide:\s*([\s\S]*?)-->\s*\n?/i);
-        if (m) {
-          rest = rest.slice(m[0].length);
-          const col = m[1].match(/data-background-color="([^"]*)"/i);
-          const grad = m[1].match(/data-background-gradient="([^"]*)"/i);
-          const img = m[1].match(/data-background-image="([^"]*)"/i);
-          if (col) bg += `background:${clean(col[1])};`;
-          if (grad) bg += `background:${clean(grad[1])};`;
-          if (img) bg += `background-image:url("${clean(img[1])}");background-size:cover;background-position:center;`;
+    parts
+      .map(({ attrs, body }, i) => {
+        // Per-page backgrounds and the brand logo belong to designed pages: a
+        // continuing page sits on the brand canvas, and a logo pinned to every
+        // printed page would land on top of its text.
+        //
+        // The whitespace above and below a continuing page's text on EVERY
+        // printed page comes from a frame table whose thead/tfoot spacer rows
+        // the print engine repeats per page. @page margins would do it in one
+        // line, but the render service's Chrome leaves margins unpainted
+        // (white on a dark brand) and has no box-decoration-break for blocks.
+        if (isFlowAttrs(attrs)) {
+          return `<div class="pdf-flow"><table class="pdf-flow-frame"><thead><tr><td><div class="pdf-flow-gap"></div></td></tr></thead><tfoot><tr><td><div class="pdf-flow-gap"></div></td></tr></tfoot><tbody><tr><td><div class="pdf-flow-body">\n${body}\n</div></td></tr></tbody></table></div>`;
         }
-        const num = showNum ? `<div class="pdf-num">${i + 1} / ${total}</div>` : "";
-        return `<div class="pdf-page"><div class="pdf-slide" style="${bg}">\n${rest}\n${num}\n</div></div>`;
+        let bg = "";
+        const col = attrs.match(/data-background-color="([^"]*)"/i);
+        const grad = attrs.match(/data-background-gradient="([^"]*)"/i);
+        const img = attrs.match(/data-background-image="([^"]*)"/i);
+        if (col) bg += `background:${clean(col[1])};`;
+        if (grad) bg += `background:${clean(grad[1])};`;
+        if (img) bg += `background-image:url("${clean(img[1])}");background-size:cover;background-position:center;`;
+        const num = showNum && !hasFlow ? `<div class="pdf-num">${i + 1} / ${total}</div>` : "";
+        return `<div class="pdf-page">${hasFlow ? opts.brandLogoHtml : ""}<div class="pdf-slide" style="${bg}">\n${body}\n${num}\n</div></div>`;
       })
       .join("\n") || `<div class="pdf-page"><div class="pdf-slide"></div></div>`;
 
@@ -162,17 +197,31 @@ function buildPrintDoc(opts: DocOpts): string {
   body{ background: var(--brand-bg, #fff); color: var(--r-main-color, #111); font-family: var(--r-main-font, -apple-system, sans-serif); }
   /* One physical page per slide; the canvas-sized slide box is scaled onto it. */
   .pdf-page{ position: relative; width: ${f.page.width}px; height: ${f.page.height}px; overflow: hidden; background: var(--brand-bg, #fff); break-after: page; page-break-after: always; }
+  /* With a continuing page in the deck, the logo is drawn inside each designed
+     page instead of as one position:fixed overlay, which repeats on every
+     printed page including the continuing ones. */
+  .pdf-page > .brand-logo{ position: absolute; }
   /* Content (often position:absolute;inset:0) fills the authoring canvas. */
   .pdf-slide{ position: relative; width: ${f.canvas.width}px; height: ${f.canvas.height}px; overflow: hidden; box-sizing: border-box; background: var(--brand-bg, #fff);${scale !== 1 ? ` transform: scale(${scale}); transform-origin: top left;` : ""} }
+  /* A continuing page: laid out at canvas width and shrunk with zoom, not a
+     transform. Zoom scales layout, so the print engine can break the content
+     across pages; a transformed box would be cut as one picture. */
+  .pdf-flow{ break-before: page; }
+  .pdf-flow-frame{ width: ${f.page.width}px; border-collapse: collapse; border-spacing: 0; }
+  .pdf-flow-frame > :is(thead, tbody, tfoot) > tr > td{ padding: 0; border: 0; }
+  .pdf-flow-gap{ height: ${gap}px; }
+  .pdf-flow-body{ width: ${f.canvas.width}px; box-sizing: border-box;${scale !== 1 ? ` zoom: ${scale};` : ""} }
+  .pdf-flow-body :is(tr, li, img, figure, blockquote, .chart, .infographic){ break-inside: avoid; }
+  .pdf-flow-body :is(h1, h2, h3, h4){ break-after: avoid; }
   /* Brand defaults (a guideline, not forced): alignment + type scale. Inline
      per-slide styles win, so a slide can deviate. */
-  .pdf-slide > div{ text-align: var(--brand-align, left); align-items: var(--brand-justify, flex-start); }
-  .pdf-slide h1{ font-size: var(--brand-heading-size); }
-  .pdf-slide h2{ font-size: var(--brand-subheading-size); }
-  .pdf-slide h3{ font-size: calc(var(--brand-subheading-size) * 0.82); }
-  .pdf-slide :is(p, li, blockquote, td, th, figcaption){ font-size: var(--brand-body-size); }
-  .pdf-slide .infographic{ flex: 0 1 auto !important; min-height: 0; }
-  .pdf-slide .infographic svg{ font-family: var(--r-main-font); }
+  :is(.pdf-slide, .pdf-flow-body) > div{ text-align: var(--brand-align, left); align-items: var(--brand-justify, flex-start); }
+  :is(.pdf-slide, .pdf-flow-body) h1{ font-size: var(--brand-heading-size); }
+  :is(.pdf-slide, .pdf-flow-body) h2{ font-size: var(--brand-subheading-size); }
+  :is(.pdf-slide, .pdf-flow-body) h3{ font-size: calc(var(--brand-subheading-size) * 0.82); }
+  :is(.pdf-slide, .pdf-flow-body) :is(p, li, blockquote, td, th, figcaption){ font-size: var(--brand-body-size); }
+  :is(.pdf-slide, .pdf-flow-body) .infographic{ flex: 0 1 auto !important; min-height: 0; }
+  :is(.pdf-slide, .pdf-flow-body) .infographic svg{ font-family: var(--r-main-font); }
   .pdf-page:last-child{ break-after: auto; page-break-after: avoid; }
   .pdf-num{ position: absolute; bottom: 22px; right: 28px; font: 500 18px/1 var(--r-main-font); color: var(--brand-muted, #999); }
   /* Speaker notes are presenter-only; never print them (reveal hides them in the
@@ -185,7 +234,7 @@ function buildPrintDoc(opts: DocOpts): string {
 </style>
 ${opts.brandHeadHtml}
 </head><body>
-${opts.brandLogoHtml}
+${hasFlow ? "" : opts.brandLogoHtml}
 ${slides}
 <script src="${REVEAL}/plugin/highlight/highlight.js"></script>
 <script>${CHART_FNS}</script>
@@ -196,7 +245,7 @@ ${slides}
 </body></html>`;
 }
 
-export function revealViewScript(opts: Pick<DocOpts, "format" | "thumb" | "nav">): string {
+export function revealViewScript(opts: Pick<DocOpts, "format" | "thumb" | "nav" | "preview">): string {
   // Fixed design canvas (the deck format's size). center:false — designed slides
   // position their own content (absolute / flex) inside the canvas, so reveal
   // must not re-center. fragments:false so animated elements are always visible
@@ -214,6 +263,7 @@ export function revealViewScript(opts: Pick<DocOpts, "format" | "thumb" | "nav">
            minScale: 0.05, maxScale: 1,
          }).then(function () { renderCharts(document); });`
       : `var params = new URLSearchParams(location.search);
+         var PREVIEW = ${opts.preview ? "true" : "false"};
          var NAV_MODE = ${JSON.stringify(opts.nav?.mode ?? "dots")};
          var NAV = { arrows: NAV_MODE === 'arrows', progress: NAV_MODE === 'arrows', dots: NAV_MODE === 'dots' };
          Reveal.initialize({
@@ -240,6 +290,8 @@ export function revealViewScript(opts: Pick<DocOpts, "format" | "thumb" | "nav">
            function presenting() { return presentFlag || !!(document.fullscreenElement || document.webkitFullscreenElement); }
            function syncPresentMode() {
              var p = presenting();
+             document.body.classList.toggle('sv-presenting', p);
+             markTokens();
              // Switching fragments on (entering present) hides the already-visible
              // fragments on the current slide — which would animate them backwards
              // (a fade-up looks like fade-down). Kill fragment transitions across
@@ -271,6 +323,38 @@ export function revealViewScript(opts: Pick<DocOpts, "format" | "thumb" | "nav">
              for (var i = 0; i < dots.length; i++) dots[i].className = 'sv-dot' + (i === h ? ' on' : '');
            }
            buildDots();
+           // Template variables: highlight every {{token}} in the editor so the
+           // fill points read at a glance. The Custom Highlight API styles text
+           // ranges without adding elements, so data-sid indexing (which maps a
+           // click back to its source element) is untouched.
+           function markTokens() {
+             if (!window.CSS || !CSS.highlights || typeof Highlight === 'undefined') return;
+             if (PREVIEW || presenting()) { CSS.highlights.delete('tpl-var'); return; }
+             var root = document.querySelector('.reveal .slides');
+             if (!root) return;
+             var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT), n, ranges = [];
+             while ((n = walker.nextNode())) {
+               var pe = n.parentElement;
+               if (pe && /^(SCRIPT|STYLE)$/.test(pe.tagName)) continue;
+               var re = /\\{\\{[^{}]*\\}\\}/g, m;
+               while ((m = re.exec(n.data))) {
+                 var r = document.createRange();
+                 r.setStart(n, m.index); r.setEnd(n, m.index + m[0].length);
+                 ranges.push(r);
+               }
+             }
+             if (ranges.length) CSS.highlights.set('tpl-var', new Highlight(...ranges));
+             else CSS.highlights.delete('tpl-var');
+           }
+           markTokens();
+           // A continuing page carries no logo in the PDF; hide the overlay on it here too.
+           function syncFlowPage() {
+             var s = Reveal.getCurrentSlide();
+             document.body.classList.toggle('sv-on-flow', !!(s && s.hasAttribute('data-flow')));
+           }
+           syncFlowPage();
+           Reveal.on('slidechanged', syncFlowPage);
+           if (PREVIEW) document.body.classList.add('sv-preview');
            document.addEventListener('fullscreenchange', syncPresentMode);
            document.addEventListener('webkitfullscreenchange', syncPresentMode);
            renderCharts(Reveal.getCurrentSlide());
@@ -311,6 +395,9 @@ export function revealViewScript(opts: Pick<DocOpts, "format" | "thumb" | "nav">
            var TEXT = {H1:1,H2:1,H3:1,H4:1,H5:1,H6:1,P:1,LI:1,BLOCKQUOTE:1,SPAN:1,STRONG:1,EM:1,CODE:1,TD:1,TH:1,FIGCAPTION:1};
            document.addEventListener('click', function (e) {
              if (presenting()) return; // presenting: clicks navigate, never edit
+             // Previewing sample values: the page on screen is a filled copy, not
+             // the template, so an edit here would bake a sample into the source.
+             if (PREVIEW) { parent.postMessage({ source: 'slides-preview', type: 'preview-click' }, '*'); return; }
              if (e.target && e.target.isContentEditable) return; // already editing
              var node = e.target, img = null, textEl = null;
              while (node && node !== document.body) {
@@ -381,6 +468,23 @@ export function revealDoc(opts: DocOpts): string {
   const REVEAL = "/vendor/reveal";
   const theme = safeTheme(opts.theme);
   const sections = buildSections(opts.content, opts.only);
+  // Continuing pages: the canvas shows the first page's worth and scrolls for
+  // the rest. In the editor a faint line marks roughly where each PDF page
+  // ends (the print engine moves a break up rather than split a line or row).
+  const fm = flowMargin(opts.format);
+  const pageSpan = opts.format.canvas.height - 2 * fm;
+  const flowCss = `
+  .reveal .slides section.design[data-flow] { padding: ${fm}px 0; overflow: hidden; }${opts.thumb ? "" : `
+  .reveal .slides section.design[data-flow] { overflow-y: auto; overscroll-behavior: contain; }
+  body:not(.sv-presenting) .reveal .slides section.design[data-flow] {
+    background-image: linear-gradient(to bottom, transparent ${pageSpan - 3}px, rgba(128,128,128,.5) ${pageSpan - 3}px);
+    background-size: 100% ${pageSpan}px; background-repeat: repeat-y;
+    background-origin: content-box; background-clip: content-box; background-attachment: local;
+  }
+  body.sv-on-flow .brand-logo { display: none; }
+  /* Template markers, editor only: {{tokens}} highlighted, repeated and optional elements outlined. */
+  ::highlight(tpl-var) { background-color: rgba(245, 158, 11, .32); }
+  body:not(.sv-presenting):not(.sv-preview) .reveal .slides :is([data-each], [data-if]) { outline: 2px dashed rgba(217, 119, 6, .55); outline-offset: 2px; }`}`;
 
   // The base theme provides layout/sizing rules; the brand head overrides the
   // reveal --r-* color/font variables on top of it.
@@ -432,7 +536,7 @@ export function revealDoc(opts: DocOpts): string {
   .sv-dots .sv-dot{ width: 9px; height: 9px; padding: 0; border: 0; border-radius: 999px;
     background: var(--brand-muted, #999); opacity: .35; cursor: pointer; transition: opacity .2s, transform .2s, background .2s; }
   .sv-dots .sv-dot:hover{ opacity: .7; }
-  .sv-dots .sv-dot.on{ background: var(--brand-accent, #fff); opacity: 1; transform: scale(1.35); }
+  .sv-dots .sv-dot.on{ background: var(--brand-accent, #fff); opacity: 1; transform: scale(1.35); }${flowCss}
 </style>
 ${opts.brandHeadHtml}
 </head><body>
@@ -443,6 +547,6 @@ ${sections}
 <script src="${REVEAL}/dist/reveal.js"></script>
 <script src="${REVEAL}/plugin/highlight/highlight.js"></script>
 ${opts.mode === "view" && !opts.thumb ? `<script src="${REVEAL}/plugin/notes/notes.js"></script>` : ""}
-<script src="/api/view-script.js?format=${encodeURIComponent(opts.format.id)}&amp;thumb=${opts.thumb ? "1" : "0"}&amp;nav=${encodeURIComponent(opts.nav?.mode ?? "dots")}"></script>
+<script src="/api/view-script.js?format=${encodeURIComponent(opts.format.id)}&amp;thumb=${opts.thumb ? "1" : "0"}&amp;nav=${encodeURIComponent(opts.nav?.mode ?? "dots")}&amp;preview=${opts.preview ? "1" : "0"}"></script>
 </body></html>`;
 }

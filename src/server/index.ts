@@ -1,4 +1,4 @@
-import { createApp } from "@clawnify/app";
+import { createApp, createRoute, z } from "@clawnify/app";
 import { query, get, run } from "./db";
 import {
   initUploads,
@@ -9,8 +9,10 @@ import {
   makeKey,
   PLACEHOLDER_KEY,
 } from "./uploads";
+import { bodyLimit } from "hono/body-limit";
 import { revealDoc, revealViewScript } from "./reveal";
-import { renderDeckPdf, renderSlidePng, renderSlidePngLink, PdfRenderError } from "./pdf";
+import { renderDeckPdf, renderDeckPdfLink, renderSlidePng, renderSlidePngLink, PdfRenderError } from "./pdf";
+import { collectFields, exampleValues, fillPages, fillTemplate, hasTemplate, TemplateTooLargeError, unusedKeys } from "./variables";
 import { parseTokens, brandHead, brandLogoTag, brandGuideHtml, extractExampleSlides, extractBrandExamples, setTokensInMd, DEFAULT_BRAND_MD, type BrandTokens } from "./brand";
 import { TEMPLATES, templatesFor } from "./templates";
 import { FORMATS, DEFAULT_FORMAT_ID, safeFormat, type PageFormat } from "./formats";
@@ -37,7 +39,9 @@ const app = createApp<{ Bindings: Bindings }>({
   title: "OpenSlides",
   version: "1.0.0",
   description:
-    "Agent-friendly slide decks and A4 documents: designed HTML pages styled by a shared brand, presented in the browser and exported to PDF.",
+    "Agent-friendly slide decks and A4 documents: designed HTML pages styled by a shared brand, presented in the browser and exported to PDF. " +
+    "A document can be a template: GET /api/decks/{id}/fields lists its {{variables}} with a complete example body, and " +
+    "POST /api/decks/{id}/render { \"values\": { … } } returns a link to the finished PDF (quotes, contracts, offer letters).",
 });
 
 app.use("/api/*", async (c, next) => {
@@ -61,8 +65,44 @@ interface Deck {
   brand_id: string | null;
   format: string; // page format id ('16:9' | 'a4-portrait') — see formats.ts
   instructions: string; // deck-level agent.md (general guidance the AI follows)
+  sample_values: string; // JSON object: example values for the deck's {{variables}}
   created_at: string;
   updated_at: string;
+}
+
+const isPlainObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+
+function parseSample(s: string | null | undefined): Record<string, unknown> {
+  try {
+    const v = JSON.parse(s || "{}");
+    return isPlainObject(v) ? v : {};
+  } catch {
+    return {};
+  }
+}
+
+// Sample values are stored as JSON text. Callers may send an object or its
+// JSON string; anything else is refused. Bounded so a deck row stays small.
+const MAX_SAMPLE_BYTES = 200 * 1024;
+function sampleToStore(v: unknown): { ok: true; json: string } | { ok: false; error: string } {
+  let obj = v;
+  if (typeof v === "string") {
+    try { obj = JSON.parse(v); } catch { return { ok: false, error: "sample_values must be a JSON object" }; }
+  }
+  if (!isPlainObject(obj)) return { ok: false, error: "sample_values must be an object, e.g. { \"client\": { \"name\": \"…\" } }" };
+  const json = JSON.stringify(obj);
+  if (json.length > MAX_SAMPLE_BYTES) return { ok: false, error: "sample_values is too large (max 200 KB)" };
+  return { ok: true, json };
+}
+
+/**
+ * The deck filled with its own sample values, leaving unset {{tokens}} visible:
+ * what the editor preview and the in-app PDF export show. Never used to fill a
+ * render API request, where a gap must fail instead.
+ */
+function withSamples(row: Pick<Deck, "content" | "sample_values">): string {
+  if (!hasTemplate(row.content)) return row.content;
+  return joinDeck(fillPages(splitDeck(row.content), parseSample(row.sample_values), { strict: false }).pages);
 }
 
 // Pagination is a single mutually-exclusive choice.
@@ -98,9 +138,13 @@ app.get("/api/decks/:id", async (c) => {
   return c.json(row);
 });
 
+type DeckInput = Partial<Omit<Deck, "sample_values">> & { sample_values?: unknown };
+
 app.post("/api/decks", async (c) => {
-  const b = await c.req.json<Partial<Deck> & { seed_from_brand?: boolean }>();
+  const b = await c.req.json<DeckInput & { seed_from_brand?: boolean }>();
   if (!b.title?.trim()) return c.json({ error: "title is required" }, 400);
+  const sample = b.sample_values === undefined ? { ok: true as const, json: "{}" } : sampleToStore(b.sample_values);
+  if (!sample.ok) return c.json({ error: sample.error }, 400);
   const format = b.format && FORMATS[b.format] ? b.format : DEFAULT_FORMAT_ID;
   // "Use for new slides" seeds the deck from the brand's own example slides — the
   // ones tagged for THIS deck's format (untagged = 16:9) — so it starts on-brand
@@ -111,8 +155,8 @@ app.post("/api/decks", async (c) => {
     if (examples.length) content = examples.join("\n\n---\n\n");
   }
   const res = await run(
-    "INSERT INTO decks (title, content, theme, brand_id, format, nav, instructions) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    [b.title.trim(), content, b.theme ?? "black", b.brand_id ?? null, format, JSON.stringify(DEFAULT_NAV), b.instructions ?? ""],
+    "INSERT INTO decks (title, content, theme, brand_id, format, nav, instructions, sample_values) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    [b.title.trim(), content, b.theme ?? "black", b.brand_id ?? null, format, JSON.stringify(DEFAULT_NAV), b.instructions ?? "", sample.json],
   );
   const row = await get<Deck>("SELECT * FROM decks WHERE rowid = ?", [res.lastInsertRowid]);
   return c.json(row, 201);
@@ -122,10 +166,12 @@ app.put("/api/decks/:id", async (c) => {
   const id = c.req.param("id");
   const existing = await get<Deck>("SELECT * FROM decks WHERE id = ?", [id]);
   if (!existing) return c.json({ error: "Not found" }, 404);
-  const b = await c.req.json<Partial<Deck>>();
+  const b = await c.req.json<DeckInput>();
+  const sample = b.sample_values === undefined ? { ok: true as const, json: existing.sample_values } : sampleToStore(b.sample_values);
+  if (!sample.ok) return c.json({ error: sample.error }, 400);
   await run(
-    `UPDATE decks SET title = ?, content = ?, theme = ?, nav = ?, brand_id = ?, instructions = ?, updated_at = datetime('now') WHERE id = ?`,
-    [b.title ?? existing.title, b.content ?? existing.content, b.theme ?? existing.theme, b.nav ?? existing.nav, b.brand_id ?? existing.brand_id, b.instructions ?? existing.instructions, id],
+    `UPDATE decks SET title = ?, content = ?, theme = ?, nav = ?, brand_id = ?, instructions = ?, sample_values = ?, updated_at = datetime('now') WHERE id = ?`,
+    [b.title ?? existing.title, b.content ?? existing.content, b.theme ?? existing.theme, b.nav ?? existing.nav, b.brand_id ?? existing.brand_id, b.instructions ?? existing.instructions, sample.json, id],
   );
   const row = await get<Deck>("SELECT * FROM decks WHERE id = ?", [id]);
   scheduleSweep(c); // a media reference may have just been removed
@@ -143,21 +189,32 @@ app.get("/api/view-script.js", (c) => c.body(revealViewScript({
   format: safeFormat(c.req.query("format")),
   thumb: c.req.query("thumb") === "1",
   nav: parseNav(JSON.stringify({ mode: c.req.query("nav") })),
+  preview: c.req.query("preview") === "1",
 }), 200, { "Content-Type": "application/javascript; charset=utf-8" }));
 
 // Interactive reveal.js deck — loaded by the editor's preview iframe and
 // fullscreened for in-app presenting. ?h=&v= restores the current slide.
+// ?sample=1 shows the deck filled with its sample values, read-only.
 app.get("/api/decks/:id/view", async (c) => {
-  const row = await get<Deck>("SELECT content, theme, nav, brand_id, format FROM decks WHERE id = ?", [c.req.param("id")]);
+  const row = await get<Deck>("SELECT content, sample_values, theme, nav, brand_id, format FROM decks WHERE id = ?", [c.req.param("id")]);
   if (!row) return c.text("Not found", 404);
   const h = parseInt(c.req.query("h") || "0", 10) || 0;
   const v = parseInt(c.req.query("v") || "0", 10) || 0;
   const onlyRaw = c.req.query("only");
   const only = onlyRaw != null ? parseInt(onlyRaw, 10) : undefined;
   const thumb = c.req.query("thumb") === "1";
+  const preview = c.req.query("sample") === "1";
+  let content = row.content;
+  if (preview) {
+    try {
+      content = withSamples(row);
+    } catch (e) {
+      if (!(e instanceof TemplateTooLargeError)) throw e; // too large to preview: show the template itself
+    }
+  }
   const tokens = parseTokens(await brandMdFor(row.brand_id));
   // Render any infographic DSL → brand-themed SVG before serving.
-  const baked = await bakeInfographics(row.content, { colorPrimary: tokens.colors.accent, colorBg: tokens.colors.bg });
+  const baked = await bakeInfographics(content, { colorPrimary: tokens.colors.accent, colorBg: tokens.colors.bg });
   return c.html(
     revealDoc({
       mode: "view",
@@ -170,6 +227,7 @@ app.get("/api/decks/:id/view", async (c) => {
       v,
       only: Number.isFinite(only) ? only : undefined,
       thumb,
+      preview,
       nav: thumb ? { mode: "none" } : parseNav(row.nav),
     }),
   );
@@ -536,7 +594,169 @@ app.get("/api/templates", (c) => {
 app.get("/api/formats", (c) =>
   c.json(Object.values(FORMATS).map((f) => ({ id: f.id, label: f.label, kind: f.kind, canvas: f.canvas }))));
 
-// Export the deck to PDF (one slide per page) via the managed PDF service.
+// The print HTML for a deck's (already filled) content. The headless renderer
+// can't reach the app's authenticated /api/uploads route, so referenced media
+// (and the logo) are inlined as data: URIs.
+async function deckPrintHtml(row: Deck, content: string): Promise<string> {
+  const tokens = parseTokens(await brandMdFor(row.brand_id));
+  const baked = await bakeInfographics(content, { colorPrimary: tokens.colors.accent, colorBg: tokens.colors.bg });
+  return revealDoc({
+    mode: "print",
+    content: await inlineAssets(baked),
+    theme: row.theme,
+    format: safeFormat(row.format),
+    brandHeadHtml: brandHead(tokens),
+    brandLogoHtml: brandLogoTag(await resolveLogoForPrint(tokens.logo)),
+    nav: parseNav(row.nav), // print uses only nav.slideNumber (arrows/progress are present-only)
+  });
+}
+
+// ── Template variables ───────────────────────────────────────────────
+// Declared with createRoute so /api/openapi.json carries their request and
+// response schemas: these two routes are how agents generate documents.
+
+const ErrorSchema = z.object({ error: z.string(), detail: z.string().optional() });
+
+const FieldSchema = z.object({
+  name: z.string().describe("Dotted path, e.g. client.name. Inside a list, relative to the item."),
+  type: z.enum(["text", "list", "flag"]).describe("text: a string or number. list: repeated items (data-each). flag: only switches a data-if part."),
+  optional: z.boolean().describe("Leaving it out hides its part instead of failing the render."),
+  fields: z.array(z.any()).optional().describe("A list's item fields, same shape. A list of plain strings has one field named '.'."),
+});
+
+const fieldsRoute = createRoute({
+  method: "get",
+  path: "/api/decks/{id}/fields",
+  summary: "List a template's variables",
+  description:
+    "Every {{variable}}, data-each list and data-if flag the deck's pages use, plus `example`: a complete `values` object built from the deck's sample values. Start a render request from it.",
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: {
+      content: { "application/json": { schema: z.object({ fields: z.array(FieldSchema), example: z.record(z.string(), z.unknown()), problems: z.array(z.string()) }) } },
+      description: "The template's variables",
+    },
+    404: { content: { "application/json": { schema: ErrorSchema } }, description: "No such deck" },
+  },
+});
+
+app.openapi(fieldsRoute, async (c) => {
+  const { id } = c.req.valid("param");
+  const row = await get<Deck>("SELECT content, sample_values FROM decks WHERE id = ?", [id]);
+  if (!row) return c.json({ error: "Not found" }, 404);
+  const { fields, problems } = collectFields(splitDeck(row.content));
+  return c.json({ fields, example: exampleValues(fields, parseSample(row.sample_values)), problems }, 200);
+});
+
+const RenderBody = z.object({
+  values: z.record(z.string(), z.unknown()).describe("The template's values. GET /api/decks/{id}/fields returns a complete example."),
+  filename: z.string().optional().describe("File name for the PDF (without .pdf)."),
+  expires_in: z.number().int().optional().describe("Seconds the link stays valid: default 86400, max 604800."),
+});
+
+const renderRoute = createRoute({
+  method: "post",
+  path: "/api/decks/{id}/render",
+  summary: "Render a document from a template",
+  description:
+    "Fill the deck with `values` and render it to a PDF, returned as a link (an API proxy can't carry the bytes to an agent). " +
+    "Strict: a missing or wrong-kind value is a 422 naming its exact path (e.g. line_items[1].total) and nothing renders. " +
+    "Inside a data-each row, names refer to the item only. Values arrive formatted (\"€1,500.00\"); the template does no maths. " +
+    "The stored deck never changes, so one template serves any number of documents.",
+  middleware: [bodyLimit({ maxSize: 1024 * 1024, onError: (c) => c.json({ error: "Request body too large (max 1 MB)" }, 413) })],
+  request: {
+    params: z.object({ id: z.string() }),
+    body: { required: true, content: { "application/json": { schema: RenderBody } } },
+  },
+  responses: {
+    200: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            url: z.string().describe("Presigned link to the PDF"),
+            expires_at: z.string(),
+            size: z.number(),
+            content_type: z.string(),
+            filename: z.string(),
+            unused: z.array(z.string()).describe("Top-level keys no page uses (likely typos)"),
+          }),
+        },
+      },
+      description: "A link to the finished PDF",
+    },
+    400: { content: { "application/json": { schema: ErrorSchema } }, description: "The body is not { values: { … } }" },
+    404: { content: { "application/json": { schema: ErrorSchema } }, description: "No such deck" },
+    413: { content: { "application/json": { schema: ErrorSchema } }, description: "Body or filled document too large" },
+    422: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            error: z.enum(["missing_values", "invalid_values"]),
+            missing: z.array(z.string()),
+            invalid: z.array(z.string()),
+            unused: z.array(z.string()),
+            hint: z.string(),
+          }),
+        },
+      },
+      description: "Values missing or of the wrong kind; nothing rendered",
+    },
+    502: { content: { "application/json": { schema: ErrorSchema } }, description: "The PDF service failed" },
+    503: { content: { "application/json": { schema: ErrorSchema } }, description: "PDF rendering is not configured" },
+  },
+});
+
+app.openapi(
+  renderRoute,
+  async (c) => {
+    const { id } = c.req.valid("param");
+    const b = c.req.valid("json");
+    const row = await get<Deck>("SELECT * FROM decks WHERE id = ?", [id]);
+    if (!row) return c.json({ error: "Not found" }, 404);
+    if (!c.env.CLAWNIFY_TOKEN) {
+      return c.json({ error: "PDF rendering not configured (missing CLAWNIFY_TOKEN). It runs on deployed apps." }, 503);
+    }
+
+    const pages = splitDeck(row.content);
+    let filled: ReturnType<typeof fillPages>;
+    try {
+      filled = fillPages(pages, b.values, { strict: true });
+    } catch (e) {
+      if (e instanceof TemplateTooLargeError) return c.json({ error: e.message }, 413);
+      throw e;
+    }
+    const unused = unusedKeys(collectFields(pages).fields, b.values);
+    if (filled.missing.length || filled.invalid.length) {
+      return c.json({
+        error: filled.missing.length ? ("missing_values" as const) : ("invalid_values" as const),
+        missing: filled.missing,
+        invalid: filled.invalid,
+        unused, // a misspelled key shows up here and as missing
+        hint: "GET /api/decks/{id}/fields lists every value with an example.",
+      }, 422);
+    }
+
+    const filename = `${makeKey(b.filename?.replace(/\.pdf$/i, "") || row.title || "document")}.pdf`;
+    const expiresIn = Math.max(60, Math.min(7 * 86400, b.expires_in ?? 86400)); // the link service caps at 7 days
+    try {
+      const html = await deckPrintHtml(row, joinDeck(filled.pages));
+      const link = await renderDeckPdfLink(c.env.CLAWNIFY_TOKEN, html, safeFormat(row.format).page, { filename, expiresIn });
+      return c.json({ ...link, filename, unused }, 200);
+    } catch (err) {
+      const detail = err instanceof PdfRenderError ? err.detail || err.message : String(err);
+      return c.json({ error: "pdf_render_failed", detail }, 502);
+    }
+  },
+  // A malformed body gets one readable sentence instead of a schema dump.
+  (result, c) => {
+    if (!result.success) {
+      return c.json({ error: 'Send { "values": { … } } with values as an object. GET /api/decks/{id}/fields returns a complete example.' }, 400);
+    }
+  },
+);
+
+// Export the deck to PDF (one slide per page) via the managed PDF service. A
+// deck with {{variables}} exports filled with its sample values, as previewed.
 app.get("/api/decks/:id/pdf", async (c) => {
   const row = await get<Deck>("SELECT * FROM decks WHERE id = ?", [c.req.param("id")]);
   if (!row) return c.json({ error: "Not found" }, 404);
@@ -547,21 +767,15 @@ app.get("/api/decks/:id/pdf", async (c) => {
     );
   }
 
-  // The headless renderer can't reach the app's authenticated /api/uploads
-  // route, so inline any referenced media (and the logo) as data: URIs.
-  const tokens = parseTokens(await brandMdFor(row.brand_id));
+  let content: string;
+  try {
+    content = withSamples(row);
+  } catch (e) {
+    if (e instanceof TemplateTooLargeError) return c.json({ error: e.message }, 413);
+    throw e;
+  }
   const format = safeFormat(row.format);
-  const baked = await bakeInfographics(row.content, { colorPrimary: tokens.colors.accent, colorBg: tokens.colors.bg });
-  const content = await inlineAssets(baked);
-  const html = revealDoc({
-    mode: "print",
-    content,
-    theme: row.theme,
-    format,
-    brandHeadHtml: brandHead(tokens),
-    brandLogoHtml: brandLogoTag(await resolveLogoForPrint(tokens.logo)),
-    nav: parseNav(row.nav), // print uses only nav.slideNumber (arrows/progress are present-only)
-  });
+  const html = await deckPrintHtml(row, content);
 
   try {
     const pdf = await renderDeckPdf(c.env.CLAWNIFY_TOKEN, html, format.page);
@@ -610,7 +824,9 @@ app.get("/api/decks/:id/slide/:n", async (c) => {
   const tokens = parseTokens(await brandMdFor(row.brand_id));
   const format = safeFormat(row.format);
   try {
-    const html = await slidePrintHtml(chunks[n], row.theme, tokens, format);
+    // ?sample=1 → the page filled with the deck's sample values, as previewed.
+    const chunk = c.req.query("sample") === "1" ? fillTemplate(chunks[n], parseSample(row.sample_values), { strict: false }).html : chunks[n];
+    const html = await slidePrintHtml(chunk, row.theme, tokens, format);
     // ?output=url → a presigned link instead of bytes: agents calling through
     // API proxies can't receive binary bodies, but they can fetch/vision a URL.
     if (c.req.query("output") === "url") {
@@ -904,7 +1120,11 @@ async function sweepOrphanAssets(): Promise<void> {
   const collect = (s: string) => {
     for (const m of s.matchAll(ASSET_REF_RE)) used.add(m[1]);
   };
-  for (const d of await query<{ content: string }>("SELECT content FROM decks")) collect(d.content);
+  // A sample value can point at an upload too (an image variable's example).
+  for (const d of await query<{ content: string; sample_values: string }>("SELECT content, sample_values FROM decks")) {
+    collect(d.content);
+    collect(d.sample_values);
+  }
   for (const b of await query<{ design_md: string }>("SELECT design_md FROM brands")) collect(b.design_md);
 
   for (const a of stale) {

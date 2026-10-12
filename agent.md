@@ -7,6 +7,10 @@ presents fullscreen in the browser, and exports to PDF on the managed Clawnify
 render service. You never touch a browser or a PDF toolchain — you write HTML
 and call this app's API. **Markdown is not supported.**
 
+A document can also be a **template**: mark the parts that change with
+`{{variables}}`, then render finished PDFs from data with one API call per
+document (quotes, contracts, offer letters). See "Template variables" below.
+
 Base URL: this app's own origin. All endpoints are under `/api`.
 
 ## Page formats
@@ -22,10 +26,35 @@ fixed for its lifetime (`GET /api/formats` lists them):
 Both share the same brand variables and ~same canvas width, so one brand's type
 scale reads the same in both. **A4 pages read top-down**: use
 `padding:7% 9%` and `flex-start` (not vertical centering), denser layouts are
-fine (paragraphs, card-row sections, data tables) — but a page is still a fixed
-canvas: content that doesn't fit is **clipped, never flowed** to the next page.
-Split long sections across pages yourself and verify dense pages with the
-slide-PNG endpoint.
+fine (paragraphs, card-row sections, data tables). A designed page is a fixed
+canvas: content that doesn't fit is **clipped**. Verify dense pages with the
+slide-PNG endpoint. For long text or a table that can grow, use a
+**continuing page** instead (below).
+
+## Continuing pages
+
+A page whose first line is `<!-- .slide: data-flow -->` is not a fixed canvas:
+in the PDF it runs onto as many A4 pages as its content needs. Use it for terms
+and conditions, appendices and line-item tables of any length.
+
+```html
+<!-- .slide: data-flow -->
+<div style="padding:0 9%;box-sizing:border-box">
+  <h2>Terms and conditions</h2>
+  <p>…as much text as you need…</p>
+</div>
+```
+
+- Markup is **normal flow**: no `position:absolute;inset:0` wrapper, no fixed
+  heights. Side padding is yours (`0 9%`); the PDF adds the top and bottom
+  whitespace on every page it spans.
+- In the PDF, table header rows (`<thead>`) repeat on each page, and table rows,
+  list items, images and charts are never split across pages.
+- A continuing page carries no brand logo and no per-page background (it sits on
+  the brand background). A deck that has one prints no page numbers.
+- In the editor it scrolls, with a faint line roughly where each PDF page ends.
+  `GET /api/decks/{id}/slide/{n}` shows only its first page's worth, so check a
+  continuing page by rendering the PDF.
 
 ## Deck format
 
@@ -138,18 +167,109 @@ can carry both slide and document layouts. `POST /api/decks` with
 `(a4-portrait)`-tagged examples and every new document from that brand starts
 as the replicated template.
 
+## Template variables: generate documents from data
+
+A deck or document becomes a **template** when its pages mark what changes per
+copy. One template (a quote, a contract, an offer letter, a deck per prospect)
+then renders any number of finished PDFs from data, without editing the deck.
+
+| Mark | Means |
+|------|-------|
+| `{{client.name}}` | a value, in text or inside an attribute (`<img src="{{client.logo}}">`). Dots group related values. |
+| `<tr data-each="line_items">` | repeat this element once per item of the list `line_items`. Inside it, names refer to **the item only**. |
+| `<p data-if="discount_note">` | keep this element only when `discount_note` is set (absent, empty, `false`, `0` or `[]` hides it). |
+
+```html
+<table>
+  <thead><tr><th>Item</th><th>Total</th></tr></thead>
+  <tbody>
+    <tr data-each="line_items">
+      <td>{{name}}<div data-if="note">{{note}}</div></td>
+      <td>{{total}}</td>
+    </tr>
+  </tbody>
+</table>
+<p>Total {{total}}</p>
+<ul><li data-each="includes">{{.}}</li></ul>
+```
+
+Rules:
+
+- **Structure goes in `data-each` / `data-if`, never in `{{#section}}` tags.** The
+  editor re-parses a page as HTML on every edit, and a bare section tag inside a
+  table gets moved out of it.
+- **Inside a `data-each` element, names never fall back to outer values.** The
+  row's `{{total}}` above is the line total; the grand `{{total}}` sits outside the
+  row. A row without its own `total` is an error, not the grand total.
+  `{{.}}` is the item itself, for a list of plain strings.
+- **Values arrive formatted.** The template does no maths and no formatting: send
+  `"€1,500.00 / month"`, not `1500`. Totals are computed by whoever calls render.
+- `data-if` and `data-each` on one element: `data-if` decides whether it appears
+  at all, then `data-each` repeats it, which is how an **optional list** works.
+- Values are HTML-escaped. An image value is an https URL.
+- Text that never changes (the terms) stays literal in the page.
+- When you edit a page that holds `{{tokens}}`, keep every token **verbatim**.
+
+**Generate a document:**
+
+1. `GET /api/decks/{id}/fields` returns every variable with its type (`text`,
+   `list` with its item `fields`, or `flag` for a `data-if`-only switch), whether
+   it is `optional`, and an `example`: a complete `values` object built from the
+   deck's sample values. Start from it and replace the sample data with the real
+   values; a required value with no sample shows as a `<name>` placeholder, and
+   optional values without a sample are left out.
+2. `POST /api/decks/{id}/render` with `{ "values": { … } }` (optional
+   `"filename"`, and `"expires_in"` in seconds: default 86400, max 604800) returns
+   `{ url, expires_at, size, filename, unused }`: a link to the finished PDF.
+   Download it or hand the URL on (an email attachment, a CRM record). The link
+   expires, so render again for a fresh one. The stored deck never changes.
+3. Rendering is **strict**: if any value the pages reach is missing or of the
+   wrong kind, nothing renders and you get `422` with `missing` (exact paths such
+   as `line_items[1].total`), `invalid`, and `unused` (keys no page uses). A key
+   in `unused` next to a similar name in `missing` is a typo. Fix and retry. A
+   gap is never filled from the sample values.
+
+```json
+POST /api/decks/{id}/render
+{
+  "values": {
+    "client": { "company": "Harbor & Pine Bakery", "email": "ana@harborpine.example" },
+    "line_items": [
+      { "name": "Website care plan", "total": "€1,500.00 / month", "note": "for 1 year" },
+      { "name": "Implementation fee", "total": "€0.00" }
+    ],
+    "total": "€1,500.00"
+  },
+  "filename": "Quote Q-2026-0142"
+}
+```
+
+**Sample values** (`sample_values` on the deck, a JSON object) are example data:
+they fill the editor's Preview, the PDF button (`GET /api/decks/{id}/pdf`) and
+`GET /api/decks/{id}/slide/{n}?sample=1`. Set them with
+`PUT /api/decks/{id} { "sample_values": { … } }` when you build a template, so the
+user sees it filled. They are never used by `render`.
+
+**Making a template** from an existing document: replace each changing piece of
+text with a `{{name}}` (keep the old text as the sample value), put `data-each`
+on the row that repeats, put `data-if` on optional parts, and make any page that
+can grow a continuing page. In the editor, a person can select an element and
+use **Make variable**, or type `{{name}}` into any text.
+
 ## API
 
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET  | `/api/decks` | List decks |
-| GET  | `/api/decks/{id}` | Get one (includes `content`, `format`) |
-| POST | `/api/decks` | Create `{ title, content?, theme?, brand_id?, format? }` |
-| PUT  | `/api/decks/{id}` | Update any of `title/content/theme/brand_id` (not `format`) |
+| GET  | `/api/decks/{id}` | Get one (includes `content`, `format`, `sample_values`) |
+| POST | `/api/decks` | Create `{ title, content?, theme?, brand_id?, format?, sample_values? }` |
+| PUT  | `/api/decks/{id}` | Update any of `title/content/theme/brand_id/sample_values` (not `format`) |
 | DELETE | `/api/decks/{id}` | Delete |
-| GET  | `/api/decks/{id}/view` | Interactive reveal.js deck (HTML) |
-| GET  | `/api/decks/{id}/pdf` | Export to PDF (one slide/page per PDF page) |
-| GET  | `/api/decks/{id}/slide/{n}` | Render slide `n` (0-based) to a **PNG** — fetch it to SEE how your HTML actually rendered and confirm it looks right. Add `?output=url` → `{ url, expires_at }` (presigned link) — use this when calling through an API proxy that can't return binary bodies |
+| GET  | `/api/decks/{id}/view` | Interactive reveal.js deck (HTML). `?sample=1` fills it with the sample values |
+| GET  | `/api/decks/{id}/fields` | The template's variables, their types, and a complete `example` values object |
+| POST | `/api/decks/{id}/render` | Fill the template with `{ values }` and render a PDF → `{ url, expires_at, size, filename, unused }`. Strict: `422` lists `missing`/`invalid` paths |
+| GET  | `/api/decks/{id}/pdf` | Export to PDF (one slide/page per PDF page, continuing pages as long as they need), filled with the sample values |
+| GET  | `/api/decks/{id}/slide/{n}` | Render slide `n` (0-based) to a **PNG** — fetch it to SEE how your HTML actually rendered and confirm it looks right. Add `?output=url` → `{ url, expires_at }` (presigned link) — use this when calling through an API proxy that can't return binary bodies. Add `?sample=1` to see it filled with the sample values |
 | GET  | `/api/formats` | List page formats (id, label, kind, canvas) |
 | GET  | `/api/templates?format={id}` | Designed starter slides/pages for a format |
 | GET  | `/api/brands` | List brands (id, name, tokens) |
@@ -213,9 +333,10 @@ DECK's brand — there is no per-request brand. Set it at creation
 
 ## How export works (so you can reason about failures)
 
-`GET /api/decks/{id}/pdf` builds a print-mode reveal.js page (reveal's own
-`?print-pdf` layout, one `.pdf-page` per slide) and sends it to Clawnify's
-managed PDF service, which returns one PDF page per slide. The app does no
-rendering itself. A `503` means PDF export isn't configured (no managed token —
-only happens in local dev). A `502` means the render service rejected the deck;
-the `detail` field explains why.
+`GET /api/decks/{id}/pdf` and `POST /api/decks/{id}/render` build one print
+page per slide (a continuing page spans as many as it needs) and send it to
+Clawnify's managed PDF service, which returns a PDF with real, selectable text.
+The app does no rendering itself. A `503` means PDF export isn't configured (no
+managed token, which only happens in local dev). A `502` means the render
+service rejected the deck; the `detail` field explains why. A `413` means the
+filled document is too large (send fewer or shorter items).

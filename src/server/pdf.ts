@@ -11,6 +11,25 @@ export class PdfRenderError extends Error {
   }
 }
 
+function deckPdfRequest(html: string, page: { width: number; height: number }) {
+  return {
+    html,
+    // Render at exactly the physical page size of the deck's format. The doc's
+    // layout is fixed px, but pinning the viewport keeps the renderer from
+    // introducing any scaling of its own.
+    viewport: { width: page.width, height: page.height },
+    // The print doc injects `@page { size: …; margin: 0 }` for its format.
+    // prefer_css_page_size makes Browser Rendering honor that exact page size
+    // instead of defaulting to Letter portrait — without it every page block
+    // lands in the top strip and the rest bleeds onto the next page.
+    // (Cloudflare's REST /pdf supports preferCSSPageSize/format, not pixel
+    // width/height, so we drive the size from the document's own CSS.)
+    prefer_css_page_size: true,
+    print_background: true,
+    margin: { top: "0", right: "0", bottom: "0", left: "0" },
+  };
+}
+
 export async function renderDeckPdf(
   token: string,
   html: string,
@@ -22,22 +41,7 @@ export async function renderDeckPdf(
       "Authorization": `Bearer ${token}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      html,
-      // Render at exactly the physical page size of the deck's format. The doc's
-      // layout is fixed px, but pinning the viewport keeps the renderer from
-      // introducing any scaling of its own.
-      viewport: { width: page.width, height: page.height },
-      // The print doc injects `@page { size: …; margin: 0 }` for its format.
-      // prefer_css_page_size makes Browser Rendering honor that exact page size
-      // instead of defaulting to Letter portrait — without it every page block
-      // lands in the top strip and the rest bleeds onto the next page.
-      // (Cloudflare's REST /pdf supports preferCSSPageSize/format, not pixel
-      // width/height, so we drive the size from the document's own CSS.)
-      prefer_css_page_size: true,
-      print_background: true,
-      margin: { top: "0", right: "0", bottom: "0", left: "0" },
-    }),
+    body: JSON.stringify(deckPdfRequest(html, page)),
   });
 
   if (!res.ok) {
@@ -59,6 +63,27 @@ export interface RenderLink {
   expires_at: string;
   size: number;
   content_type: string;
+}
+
+// The same deck PDF, stored by the service and returned as a presigned link:
+// what the render API hands to agents, which can't receive the bytes.
+export async function renderDeckPdfLink(
+  token: string,
+  html: string,
+  page: { width: number; height: number },
+  opts: { filename: string; expiresIn: number },
+): Promise<RenderLink> {
+  const res = await fetch("https://services.clawnify.com/pdf/render", {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ ...deckPdfRequest(html, page), output: "url", filename: opts.filename, expires_in: opts.expiresIn }),
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new PdfRenderError(`PDF service responded ${res.status}`, res.status, detail.slice(0, 500));
+  }
+  const link = (await res.json()) as RenderLink;
+  return { url: link.url, expires_at: link.expires_at, size: link.size, content_type: link.content_type };
 }
 
 export async function renderSlidePngLink(

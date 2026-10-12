@@ -192,7 +192,115 @@ ${docRow("3", "Third topic", "Two or three sentences that develop this point wit
   },
 ];
 
+// Continuing pages (`<!-- .slide: data-flow -->`): normal-flow content that runs
+// onto as many A4 pages as it needs in the PDF. These are the template pages of
+// a quote or contract: {{variables}} for what changes per document, a
+// data-each row per line item, data-if for the parts some documents leave out.
+const flowWrap = (inner: string) =>
+  `<!-- html -->
+<!-- .slide: data-flow -->
+<div style="padding:0 9%;box-sizing:border-box">
+${inner}
+</div>`;
+
+const band = "padding:44px;border-radius:var(--brand-radius);background:color-mix(in srgb, var(--brand-muted) 9%, transparent)";
+const th = `padding:14px 4px;border-bottom:${hairline};font:600 18px/1.2 var(--r-main-font);color:var(--brand-heading)`;
+const td = `padding:20px 4px;border-bottom:${hairline};vertical-align:top;color:var(--brand-text)`;
+const note = "margin-top:6px;font-size:18px;color:var(--brand-muted)";
+const label = "margin:0;font-weight:600;color:var(--brand-heading)";
+
+export const QUOTE_TEMPLATES: SlideTemplate[] = [
+  {
+    id: "doc-quote",
+    name: "Quote with line items",
+    body: flowWrap(`  <div style="display:flex;justify-content:space-between;align-items:center">
+    <h1 style="margin:0;color:var(--brand-heading);font-size:var(--brand-subheading-size)">Quote</h1>
+    <div style="font:700 40px/1 var(--r-heading-font);color:var(--brand-accent)">Your company</div>
+  </div>
+  <div style="display:flex;justify-content:space-between;gap:48px;margin-top:36px;break-inside:avoid;${band}">
+    <div>
+      <p style="${label}">{{client.company}}</p>
+      <p style="margin:6px 0 0">{{client.address}}</p>
+      <p style="margin:6px 0 0" data-if="client.vat">VAT {{client.vat}}</p>
+      <p style="margin:28px 0 0;font-weight:600;color:var(--brand-heading)">{{client.contact}}</p>
+      <p style="margin:6px 0 0">{{client.email}}</p>
+    </div>
+    <div style="text-align:right">
+      <p style="${label}">Quote details</p>
+      <p style="margin:6px 0 0">Reference: {{quote.reference}}</p>
+      <p style="margin:6px 0 0">Created: {{quote.date}}</p>
+      <p style="margin:6px 0 0">Valid until: {{quote.valid_until}}</p>
+      <p style="margin:28px 0 0;font-weight:600;color:var(--brand-heading)">Prepared by</p>
+      <p style="margin:6px 0 0">{{quote.author}}</p>
+      <p style="margin:6px 0 0">{{quote.author_email}}</p>
+    </div>
+  </div>
+  <h2 style="margin:64px 0 0;color:var(--brand-heading)">Products &amp; services</h2>
+  <table style="width:100%;margin-top:24px;border-collapse:collapse">
+    <thead>
+      <tr>
+        <th style="${th};text-align:left;width:44%">Item &amp; description</th>
+        <th style="${th};text-align:right;width:8%">Qty</th>
+        <th style="${th};text-align:right;width:24%">Unit price</th>
+        <th style="${th};text-align:right;width:24%">Total</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr data-each="line_items">
+        <td style="${td}">{{name}}<div data-if="description" style="${note}">{{description}}</div></td>
+        <td style="${td};text-align:right">{{quantity}}</td>
+        <td style="${td};text-align:right">{{unit_price}}</td>
+        <td style="${td};text-align:right">{{total}}<div data-if="total_note" style="${note}">{{total_note}}</div></td>
+      </tr>
+    </tbody>
+  </table>
+  <table style="width:50%;margin:8px 0 0 auto;border-collapse:collapse;break-inside:avoid">
+    <tbody>
+      <tr data-each="subtotals">
+        <td style="${td}">{{label}}</td>
+        <td style="${td};text-align:right">{{amount}}<div data-if="note" style="${note}">{{note}}</div></td>
+      </tr>
+      <tr>
+        <td style="${td};font-weight:600;color:var(--brand-heading)">Total</td>
+        <td style="${td};text-align:right;font-weight:600;color:var(--brand-heading)">{{total}}</td>
+      </tr>
+    </tbody>
+  </table>`),
+  },
+  {
+    id: "doc-terms-signature",
+    name: "Purchase terms + signature",
+    body: flowWrap(`  <div style="${band}">
+    <h2 style="margin:0;color:var(--brand-heading)">Purchase terms</h2>
+    <p style="margin:24px 0 0;font-weight:600;color:var(--brand-heading)">{{plan.name}} includes:</p>
+    <ul style="margin:12px 0 0;padding-left:1.2em;line-height:1.6">
+      <li data-each="plan.includes">{{.}}</li>
+    </ul>
+    <p style="margin:24px 0 0;font-weight:600;color:var(--brand-heading)">Our terms and conditions apply:</p>
+    <ul style="margin:12px 0 0;padding-left:1.2em;line-height:1.6">
+      <li>Payment within 14 days of the invoice date.</li>
+      <li>Start date: {{quote.start_date}}.</li>
+      <li data-if="special_terms" data-each="special_terms">{{.}}</li>
+    </ul>
+  </div>
+  <div style="margin-top:72px;break-inside:avoid">
+    <h2 style="margin:0;color:var(--brand-heading)">Signature</h2>
+    <div style="display:flex;gap:64px;margin-top:110px">
+      <div style="flex:1;border-top:2px solid var(--brand-text);padding-top:10px">Signature</div>
+      <div style="flex:1;border-top:2px solid var(--brand-text);padding-top:10px">Date</div>
+    </div>
+    <div style="width:calc(50% - 32px);margin-top:110px;border-top:2px solid var(--brand-text);padding-top:10px">Name</div>
+  </div>`),
+  },
+  {
+    id: "doc-flow-text",
+    name: "Continuing text (terms, appendix)",
+    body: flowWrap(`  <h2 style="margin:0;color:var(--brand-heading)">Terms and conditions</h2>
+  <p style="margin:28px 0 0;color:var(--brand-text)">Paste long text here. In the PDF this page continues onto as many pages as the text needs.</p>`),
+  },
+];
+
 /** The starter/template set for a deck's format. */
 export function templatesFor(format: PageFormat): SlideTemplate[] {
-  return format.kind === "document" ? DOC_TEMPLATES : TEMPLATES;
+  return format.kind === "document" ? [...DOC_TEMPLATES, ...QUOTE_TEMPLATES] : TEMPLATES;
 }
