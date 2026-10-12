@@ -119,13 +119,37 @@ ${otherFormatExamples.slice(0, 3).map((ex, i) => `### Reference layout ${i + 1}\
 - Pages read TOP-DOWN: use flex-start (not vertical centering) and ~7% top/bottom
   + ~9% side padding: \`<div style="position:absolute;inset:0;display:flex;flex-direction:column;padding:7% 9%;box-sizing:border-box">\`.
 - Documents carry real content: paragraphs, card-row sections, data tables. Denser
-  than a slide is fine — but a page is still a FIXED canvas: content that doesn't
-  fit is clipped, never flowed to the next page. Split long sections across pages
-  yourself, and view_slide any dense page to check nothing is cut off.
+  than a slide is fine. A designed page is a FIXED canvas: content that doesn't
+  fit is clipped. view_slide any dense page to check nothing is cut off.
+- CONTINUING PAGES: for long text (terms and conditions, an appendix) or a table
+  that can grow (line items), make the page continue instead. Its first line is
+  \`<!-- .slide: data-flow -->\` and its markup is normal flow, with NO
+  absolute full-canvas wrapper: \`<div style="padding:0 9%;box-sizing:border-box">…</div>\`.
+  In the PDF it runs onto as many A4 pages as it needs (table header rows repeat,
+  rows never split, the PDF adds the top/bottom whitespace). It carries no logo
+  and no per-page background. view_slide shows only its first page's worth.
 - Typical structure: a cover page, content pages (sections/tables/prose), a back
-  cover with contact details. The brand logo overlays every page automatically.`
+  cover with contact details. The brand logo overlays every designed page automatically.`
     : "";
-  return `You are a ${isDoc ? "document designer" : "slide designer"} for "OpenSlides", a reveal.js ${isDoc ? "deck tool being used in A4 document mode" : "deck tool"}. You build and refine ${isDoc ? "documents" : "decks"} by calling small tools in a loop, and you ALWAYS match the brand.${docMode}${examplesBlock}
+  const variablesBlock = `
+
+## TEMPLATE VARIABLES (documents generated from data)
+When the user wants a template (a quote, contract, offer letter, a deck per
+prospect), mark what changes per copy instead of writing one example:
+- \`{{client.name}}\` for a value, in text or inside an attribute (an image src).
+  Dotted names group related values.
+- \`data-each="line_items"\` on the element that repeats (a <tr>, an <li>, a card).
+  Inside it, names refer to the ITEM only:
+  \`<tr data-each="line_items"><td>{{name}}</td><td>{{total}}</td></tr>\`.
+  To show an outer value in every row, write \`{{@root.currency}}\`.
+- \`data-if="discount_note"\` on an element that shows only when that value is
+  set; \`data-unless="discount_note"\` for one that shows only when it is not.
+- Put structure in those attributes, never as {{#section}} tags.
+- Values arrive formatted: never compute totals or format currency in the page.
+- Text that never changes (the terms) stays literal.
+- When editing a page that holds {{tokens}}, keep every token VERBATIM. Never
+  replace one with example text.`;
+  return `You are a ${isDoc ? "document designer" : "slide designer"} for "OpenSlides", a reveal.js ${isDoc ? "deck tool being used in A4 document mode" : "deck tool"}. You build and refine ${isDoc ? "documents" : "decks"} by calling small tools in a loop, and you ALWAYS match the brand.${docMode}${variablesBlock}${examplesBlock}
 
 ## How you work (a multi-step loop)
 1. Call \`read_brand_design\` FIRST to study the brand's voice, layout, spacing and rules.

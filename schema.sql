@@ -17,6 +17,10 @@ CREATE TABLE IF NOT EXISTS decks (
   -- deck-level "agent.md": general, free-form instructions for this deck that the
   -- AI follows on every generate (audience, tone, must-say points, do/don'ts).
   instructions TEXT NOT NULL DEFAULT '',
+  -- example values (a JSON object) for the deck's {{variables}}: what the editor
+  -- preview and the in-app PDF export fill in. Never used to fill a render API
+  -- request, where a missing value is an error.
+  sample_values TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

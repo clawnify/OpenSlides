@@ -49,3 +49,13 @@ export function safeFormat(id: string | null | undefined): PageFormat {
 export function printScale(f: PageFormat): number {
   return f.page.width / f.canvas.width;
 }
+
+/**
+ * Top and bottom whitespace (canvas px) on every physical page a continuing
+ * page spans (one marked `<!-- .slide: data-flow -->`). It matches the ~7% top
+ * padding of designed document pages, so a continuing page lines up with its
+ * neighbours.
+ */
+export function flowMargin(f: PageFormat): number {
+  return Math.round(f.canvas.width * 0.07);
+}

@@ -23,7 +23,11 @@ import {
   FileText,
   Paperclip,
   ExternalLink,
+  Eye,
+  Braces,
+  X,
 } from "lucide-react";
+import { collectFields, isValidName, type Field } from "../server/variables";
 
 // Open a file picker and upload the chosen file as an asset. Resolves to the
 // stored asset (or null if cancelled). `extra` adds form fields (e.g.
@@ -206,6 +210,66 @@ function setNotes(chunk: string, notes: string): string {
   }));
 }
 
+// ── continuing pages ─────────────────────────────────────────────────
+// A page marked `<!-- .slide: data-flow -->` continues onto as many pages as its
+// content needs in the PDF. It must be normal-flow HTML: a designed page's
+// full-canvas wrapper (position:absolute;inset:0) is converted on the way in
+// and back on the way out. The PDF supplies the top/bottom whitespace.
+const isFlowAttrs = (attrs: string) => /(^|\s)data-flow(?=[\s=]|$)/i.test(attrs);
+const isFlowSlide = (chunk: string) => isFlowAttrs(parseHtmlSlide(chunk).attrs);
+const WRAPPER_STYLE_RE = /^(\s*<div\b[^>]*?\bstyle=")([^"]*)(")/i;
+function setSlideFlow(chunk: string, on: boolean): string {
+  const { attrs, body } = parseHtmlSlide(chunk);
+  const rest = attrs.replace(/(^|\s)data-flow(="[^"]*")?(?=\s|$)/gi, " ").replace(/\s+/g, " ").trim();
+  const nextBody = body.replace(WRAPPER_STYLE_RE, (_m, open: string, style: string, close: string) => {
+    if (on && /position\s*:\s*absolute/i.test(style)) {
+      style = style
+        .replace(/position\s*:\s*absolute\s*;?/i, "")
+        .replace(/inset\s*:\s*0\s*;?/i, "")
+        .replace(/display\s*:\s*flex\s*;?/i, "")
+        .replace(/flex-direction\s*:\s*column\s*;?/i, "")
+        .replace(/padding\s*:\s*7%\s+9%/i, "padding:0 9%");
+    } else if (!on && !/position\s*:\s*absolute/i.test(style)) {
+      style = `position:absolute;inset:0;display:flex;flex-direction:column;${style.replace(/padding\s*:\s*0\s+9%/i, "padding:7% 9%")}`;
+    }
+    return open + style + close;
+  });
+  return buildHtmlSlide(on ? `${rest} data-flow`.trim() : rest, nextBody);
+}
+
+// ── sample values (nested objects addressed by dotted paths) ─────────
+type Values = Record<string, unknown>;
+const isObj = (v: unknown): v is Values => typeof v === "object" && v !== null && !Array.isArray(v);
+function getAt(obj: unknown, path: string): unknown {
+  let v = obj;
+  for (const k of path.split(".")) {
+    if (!isObj(v)) return undefined;
+    v = v[k];
+  }
+  return v;
+}
+function setAt(obj: Values, path: string, value: unknown): Values {
+  const next = structuredClone(obj);
+  const keys = path.split(".");
+  let o = next;
+  for (const k of keys.slice(0, -1)) {
+    if (!isObj(o[k])) o[k] = {};
+    o = o[k] as Values;
+  }
+  o[keys[keys.length - 1]] = value;
+  return next;
+}
+function parseValues(s: string | undefined): Values {
+  try {
+    const v = JSON.parse(s || "{}");
+    return isObj(v) ? v : {};
+  } catch {
+    return {};
+  }
+}
+// "Client name" → "client_name"; dots group related values (client.name).
+const toVarName = (s: string) => s.trim().replace(/\s+/g, "_").replace(/[^\w.-]/g, "").replace(/^[^A-Za-z_]+/, "");
+
 // ── brand tokens ─────────────────────────────────────────────────────
 interface BrandTokens {
   colors: { bg: string; text: string; heading: string; accent: string; muted: string };
@@ -251,7 +315,7 @@ const ANIMS = [
   { v: "grow", l: "Grow" },
 ];
 
-interface Deck { id: string; title: string; content: string; nav: string; brand_id: string | null; format: string; instructions: string; updated_at: string }
+interface Deck { id: string; title: string; content: string; nav: string; brand_id: string | null; format: string; instructions: string; sample_values: string; updated_at: string }
 interface Asset { id: string; key: string; name: string; content_type: string; role?: string; brand_id?: string | null }
 interface SlideTemplate { id: string; name: string; body: string }
 type NavMode = "dots" | "arrows" | "numbers" | "none";
@@ -327,6 +391,12 @@ export function App() {
   const [sel, setSel] = useState(0);
   const [nav, setNav] = useState<Nav>({ ...DEFAULT_NAV });
   const [instructions, setInstructions] = useState(""); // deck-level agent.md
+  // Example values for the deck's {{variables}}: they fill the preview and the
+  // PDF button. Real documents get their values from the render API.
+  const [sampleValues, setSampleValues] = useState<Values>({});
+  const [previewSamples, setPreviewSamples] = useState(false);
+  const sampleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const previewRef = useRef(false);
 
   // brand library
   const [brands, setBrands] = useState<{ id: string; name: string; tokens: BrandTokens }[]>([]);
@@ -371,6 +441,11 @@ export function App() {
   const deckFormatId = selected?.format ?? "16:9";
   const deckFormat = formatOf(deckFormatId);
   const pageWord = deckFormat.kind === "document" ? "page" : "slide";
+  const isDoc = deckFormat.kind === "document";
+  // The deck's variables, read from the pages themselves (the template is the source of truth).
+  const { fields, problems } = useMemo(() => collectFields(slides), [slides]);
+  const showingSamples = previewSamples && fields.length > 0;
+  useEffect(() => { previewRef.current = showingSamples; }, [showingSamples]);
 
   // ── loading ──
   const loadDecks = useCallback(async () => {
@@ -438,6 +513,7 @@ export function App() {
       else if (m.type === "el-select") setSelEl({ sid: m.sid, tag: m.tag, anim: m.anim, text: m.text });
       else if (m.type === "el-edit") onElEdit(m.sid, m.oldText, m.newText);
       else if (m.type === "img-click") onImgClick(m.sid, m.src);
+      else if (m.type === "preview-click") showToast("Showing sample values. Turn off Preview to edit the template.");
     };
     window.addEventListener("message", onMsg);
     return () => window.removeEventListener("message", onMsg);
@@ -459,8 +535,8 @@ export function App() {
   // every move and flash slide 1. It reloads only when the deck/brand changes
   // (viewKey), restoring the current slide via the h= param captured at that moment.
   const canvasSrc = useMemo(
-    () => (selectedId ? `/api/decks/${selectedId}/view?h=${selRef.current}&t=${viewKey}` : ""),
-    [selectedId, viewKey],
+    () => (selectedId ? `/api/decks/${selectedId}/view?h=${selRef.current}&t=${viewKey}${showingSamples ? "&sample=1" : ""}` : ""),
+    [selectedId, viewKey, showingSamples],
   );
 
   function selectDeck(d: Deck) {
@@ -475,6 +551,8 @@ export function App() {
     setSelEl(null);
     setBrandId(d.brand_id ?? null); // reflect the deck's actual brand in the inspector
     setInstructions(d.instructions ?? ""); instructionsRef.current = d.instructions ?? "";
+    setSampleValues(parseValues(d.sample_values));
+    setPreviewSamples(false);
     resetHistory(); // history is per-deck
     titleRef.current = d.title;
     const nv = parseNavMode(d.nav); navRef.current = nv; setNav(nv);
@@ -504,6 +582,23 @@ export function App() {
       rendered.current = body.content;
       if (!quiet) setViewKey((k) => k + 1);
     }
+  }
+  // Sample values save on their own debounce. They only change what the
+  // preview shows, so the canvas reloads only while previewing.
+  function updateSamples(next: Values) {
+    setSampleValues(next);
+    if (sampleTimer.current) clearTimeout(sampleTimer.current);
+    const id = selectedId;
+    sampleTimer.current = setTimeout(async () => {
+      if (!id) return;
+      const res = await fetch(`/api/decks/${id}`, {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sample_values: next }),
+      });
+      if (!res.ok) { const m: any = await res.json().catch(() => ({})); showToast(m.error || "Couldn't save the sample values"); return; }
+      const up: Deck = await res.json();
+      setDecks((ds) => ds.map((d) => (d.id === up.id ? up : d)));
+      if (previewRef.current) setViewKey((k) => k + 1);
+    }, 500);
   }
   // Deck-level agent.md. Saves quietly (doesn't change the rendered slide).
   function setDeckInstructions(v: string) {
@@ -610,6 +705,22 @@ export function App() {
     if (!selEl) return;
     applyToSlide(sel, (c) => removeElHtml(c, selEl.sid));
     setSelEl(null);
+  }
+  // Turn the selected element's text into {{name}}, keeping that text as the sample value.
+  function makeVariable(raw: string) {
+    if (!selEl) return;
+    const name = toVarName(raw);
+    if (!isValidName(name)) {
+      showToast("Name it with letters, digits and _ (dots group values, e.g. client.name).");
+      return;
+    }
+    const chunk = slides[sel] ?? "";
+    applyToSlide(sel, () => applyTextHtml(chunk, selEl.sid, `{{${name}}}`));
+    updateSamples(setAt(sampleValues, name, selEl.text.trim()));
+    setSelEl({ ...selEl, text: `{{${name}}}` });
+  }
+  function setPageFlow(on: boolean) {
+    applyToSlide(sel, (c) => setSlideFlow(c, on));
   }
 
   // ── background popover ──
@@ -922,6 +1033,12 @@ export function App() {
           </div>
         )}
         <span className="mr-1 text-xs text-neutral-400">{saving ? "Saving…" : selected ? `${slides.length} ${pageWord}${slides.length === 1 ? "" : "s"}` : ""}</span>
+        {selected && page === "deck" && fields.length > 0 && (
+          <button onClick={() => setPreviewSamples((p) => !p)} title="Show this document filled with its sample values"
+            className={`flex h-8 items-center gap-1.5 rounded-md border px-3 text-sm ${showingSamples ? "border-neutral-900 bg-neutral-900 text-white" : "border-neutral-200 hover:bg-neutral-50"}`}>
+            <Eye size={14} /> Preview
+          </button>
+        )}
         {!embedded && <button onClick={() => setPage(page === "brands" ? "deck" : "brands")} className={`flex h-8 items-center gap-1.5 rounded-md border px-3 text-sm ${page === "brands" ? "border-neutral-900 bg-neutral-900 text-white" : "border-neutral-200 hover:bg-neutral-50"}`}>
           <Palette size={14} /> Brands
         </button>}
@@ -976,9 +1093,10 @@ export function App() {
                 <div key={i} className="group relative">
                   <button onClick={() => gotoSlide(i)} style={{ aspectRatio: `${deckFormat.w} / ${deckFormat.h}` }}
                     className={`block w-full overflow-hidden rounded-md border bg-neutral-900 text-left ${i === sel ? "border-neutral-900 ring-2 ring-neutral-900" : "border-neutral-200 hover:border-neutral-400"}`}>
-                    <iframe key={viewKey} src={`/api/decks/${selected.id}/view?only=${i}&thumb=1&t=${viewKey}`} title={`Slide ${i + 1}`} tabIndex={-1} scrolling="no" className="pointer-events-none h-full w-full border-0" />
+                    <iframe key={viewKey} src={`/api/decks/${selected.id}/view?only=${i}&thumb=1&t=${viewKey}${showingSamples ? "&sample=1" : ""}`} title={`Slide ${i + 1}`} tabIndex={-1} scrolling="no" className="pointer-events-none h-full w-full border-0" />
                   </button>
                   <span className="absolute left-1 top-1 rounded bg-black/60 px-1 text-[10px] font-medium text-white">{String(i + 1).padStart(2, "0")}</span>
+                  {isFlowSlide(s) && <span title="Continues onto as many pages as it needs in the PDF" className="absolute bottom-1 left-1 rounded bg-black/60 px-1 text-[10px] font-medium text-white">continues</span>}
                   <div className="absolute right-1 top-1 hidden gap-0.5 group-hover:flex">
                     <IconMini onClick={() => moveSlide(i, -1)}><ChevronUp size={12} /></IconMini>
                     <IconMini onClick={() => moveSlide(i, 1)}><ChevronDown size={12} /></IconMini>
@@ -1007,7 +1125,13 @@ export function App() {
             {/* Always present the canvas as the largest format-shaped box that
                 fits the available space (container-query units), so it never
                 stretches with the window — only the letterbox around it grows. */}
-            <div className="flex min-h-0 flex-1 items-center justify-center p-3" style={{ containerType: "size" }}>
+            <div className="relative flex min-h-0 flex-1 items-center justify-center p-3" style={{ containerType: "size" }}>
+              {showingSamples && (
+                <div className="absolute left-1/2 top-1 z-10 flex -translate-x-1/2 items-center gap-2 rounded-full bg-neutral-900 px-3 py-1 text-xs text-white shadow">
+                  <Eye size={12} /> Sample values. Editing is off while previewing.
+                  <button onClick={() => setPreviewSamples(false)} className="text-neutral-300 hover:text-white" title="Back to the template"><X size={12} /></button>
+                </div>
+              )}
               <div style={{ width: `min(100cqw, calc(100cqh * ${deckFormat.w} / ${deckFormat.h}))`, aspectRatio: `${deckFormat.w} / ${deckFormat.h}` }}>
                 <iframe key={viewKey} ref={canvasRef} src={canvasSrc} title="Canvas" allowFullScreen className="h-full w-full rounded-lg border border-neutral-200 bg-white shadow-sm" />
               </div>
@@ -1055,6 +1179,11 @@ export function App() {
             </div>
 
             <div className="px-4 pb-4">
+              <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-neutral-400"><Braces size={12} /> Variables</div>
+              <VariablesPanel deckId={selected.id} fields={fields} problems={problems} values={sampleValues} onChange={updateSamples} />
+            </div>
+
+            <div className="px-4 pb-4">
               <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-neutral-400">Agent instructions</div>
               <textarea value={instructions} onChange={(e) => setDeckInstructions(e.target.value)}
                 placeholder="General guidance the AI always follows for this deck — audience, tone, must-say points, do/don'ts."
@@ -1095,12 +1224,23 @@ export function App() {
                   </div>
                   <SelectRow label="Animate in" value={selEl.anim} options={ANIMS.map((a) => a.l)}
                     onChange={(l) => setAnim(ANIMS.find((a) => a.l === l)!.v)} valueToLabel={(v) => ANIMS.find((a) => a.v === v)?.l ?? "None"} />
+                  <MakeVariable key={selEl.sid} disabled={selEl.text.includes("{{")} onMake={makeVariable} />
                 </div>
               ) : (
-                <div className="space-y-3 rounded-lg border border-neutral-200 bg-neutral-50 p-3">
-                  <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">Background</div>
-                  <ColorRow label="Slide color" value={currentBg} onChange={(v) => changeBg(v)} />
-                  <button onClick={() => changeBg(null)} className="text-xs text-neutral-400 hover:text-neutral-600">Reset to brand</button>
+                <div className="space-y-3">
+                  {isDoc && (
+                    <label className="flex items-start gap-2 rounded-lg border border-neutral-200 bg-neutral-50 p-3 text-sm text-neutral-600">
+                      <input type="checkbox" checked={isFlowSlide(slides[sel] ?? "")} onChange={(e) => setPageFlow(e.target.checked)} className="mt-0.5 accent-neutral-900" />
+                      <span>Continue onto new pages
+                        <span className="mt-0.5 block text-[11px] leading-snug text-neutral-400">For long text or tables. In the PDF this page runs onto as many pages as it needs; here it scrolls, and a faint line marks each page end.</span>
+                      </span>
+                    </label>
+                  )}
+                  <div className="space-y-3 rounded-lg border border-neutral-200 bg-neutral-50 p-3">
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">Background</div>
+                    <ColorRow label="Slide color" value={currentBg} onChange={(v) => changeBg(v)} />
+                    <button onClick={() => changeBg(null)} className="text-xs text-neutral-400 hover:text-neutral-600">Reset to brand</button>
+                  </div>
                 </div>
               )}
               <p className="mt-3 text-[11px] leading-snug text-neutral-400">Click any text or image on the slide to edit it, or the background for slide settings.</p>
@@ -1358,6 +1498,95 @@ function BrandEditor({ brandId, active, autoInstruction, onAutoConsumed, onBack,
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── variables ──
+// The deck's {{variables}}, read from its pages, each with an input for its
+// sample value. Lists get one row per item; their item fields reuse FieldInput.
+const INPUT = "w-full rounded border border-neutral-200 bg-white px-1.5 py-1 text-xs outline-none focus:border-neutral-400";
+const textOf = (v: unknown) => (typeof v === "string" || typeof v === "number" ? String(v) : "");
+
+function VariablesPanel({ deckId, fields, problems, values, onChange }: { deckId: string; fields: Field[]; problems: string[]; values: Values; onChange: (v: Values) => void }) {
+  return (
+    <div className="space-y-2.5">
+      {problems.map((p) => <p key={p} className="rounded bg-amber-50 px-2 py-1 text-[11px] leading-snug text-amber-800">{p}</p>)}
+      {fields.map((f) => (
+        <FieldInput key={f.name} field={f} value={getAt(values, f.name)} onChange={(v) => onChange(setAt(values, f.name, v))} />
+      ))}
+      <p className="text-[11px] leading-snug text-neutral-400">
+        {fields.length
+          ? <>Sample values fill the Preview and the PDF button. An agent or the API fills real ones: <code>POST /api/decks/{deckId}/render</code>.</>
+          : <>Type <code>{"{{client.name}}"}</code> into any text to make it a variable, or select an element and use Make variable. An agent or the API then fills them to generate documents.</>}
+      </p>
+    </div>
+  );
+}
+
+function FieldInput({ field, value, onChange, compact }: { field: Field; value: unknown; onChange: (v: unknown) => void; compact?: boolean }) {
+  const label = (
+    <div className="mb-1 flex items-center gap-1.5 text-xs text-neutral-600">
+      <code className="text-[11px]">{field.name}</code>
+      {field.optional && <span className="text-[10px] text-neutral-400">optional</span>}
+    </div>
+  );
+  if (field.type === "flag") {
+    return (
+      <label className="flex items-center gap-2 text-xs text-neutral-600">
+        <input type="checkbox" checked={!!value} onChange={(e) => onChange(e.target.checked)} className="accent-neutral-900" />
+        <code className="text-[11px]">{field.name}</code> <span className="text-[10px] text-neutral-400">switches an optional part</span>
+      </label>
+    );
+  }
+  if (field.type === "list") {
+    const items = Array.isArray(value) ? value : [];
+    const scalar = field.fields?.length === 1 && field.fields[0].name === ".";
+    return (
+      <div>
+        {label}
+        <div className="space-y-1.5">
+          {items.map((it, idx) => (
+            <div key={idx} className="relative space-y-1 rounded-md border border-neutral-200 p-1.5 pr-6">
+              <button onClick={() => onChange(items.filter((_, j) => j !== idx))} title="Remove" className="absolute right-1 top-1.5 text-neutral-400 hover:text-red-500"><X size={12} /></button>
+              {scalar ? (
+                <input value={textOf(it)} onChange={(e) => onChange(items.map((x, j) => (j === idx ? e.target.value : x)))} className={INPUT} />
+              ) : (
+                (field.fields ?? []).map((sub) => (
+                  <FieldInput key={sub.name} field={sub} compact value={getAt(it, sub.name)}
+                    onChange={(v) => onChange(items.map((x, j) => (j === idx ? setAt(isObj(x) ? x : {}, sub.name, v) : x)))} />
+                ))
+              )}
+            </div>
+          ))}
+          <button onClick={() => onChange([...items, scalar ? "" : {}])} className="text-xs text-neutral-500 hover:text-neutral-900">+ Add {scalar ? "item" : "row"}</button>
+        </div>
+      </div>
+    );
+  }
+  if (compact) {
+    return (
+      <label className="flex items-center gap-1.5">
+        <code title={field.name} className="w-[4.5rem] shrink-0 truncate text-[10px] text-neutral-400">{field.name}</code>
+        <input placeholder={field.optional ? "optional" : ""} value={textOf(value)} onChange={(e) => onChange(e.target.value)} className={INPUT} />
+      </label>
+    );
+  }
+  return <div>{label}<input value={textOf(value)} onChange={(e) => onChange(e.target.value)} className={INPUT} /></div>;
+}
+
+function MakeVariable({ disabled, onMake }: { disabled: boolean; onMake: (name: string) => void }) {
+  const [name, setName] = useState("");
+  if (disabled) return <p className="mt-2 text-[11px] leading-snug text-neutral-400">This element holds a variable. Edit its sample value under Variables.</p>;
+  return (
+    <div className="mt-2.5 border-t border-neutral-200 pt-2.5">
+      <div className="mb-1 text-xs text-neutral-600">Make variable</div>
+      <div className="flex gap-1.5">
+        <input value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && name.trim()) onMake(name); }}
+          placeholder="e.g. client.name" className={INPUT} />
+        <button onClick={() => onMake(name)} disabled={!name.trim()} className="shrink-0 rounded bg-neutral-900 px-2 text-xs font-medium text-white hover:bg-neutral-700 disabled:opacity-40">Make</button>
+      </div>
+      <p className="mt-1 text-[11px] leading-snug text-neutral-400">Replaces this text with <code>{"{{name}}"}</code> and keeps it as the sample value.</p>
     </div>
   );
 }

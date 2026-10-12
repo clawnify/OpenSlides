@@ -36,6 +36,15 @@ visually (click any element) or in code.
   unused media is cleaned up automatically.
 - **Export to PDF** — one click produces a clean, one-slide-per-page PDF you can
   share or print.
+- **A4 documents**: the same editor makes print-shaped documents. A page can
+  continue onto as many A4 pages as its content needs, so terms and conditions
+  or a long line-item table flow naturally, with table headers repeated on each
+  page.
+- **Templates with variables**: mark what changes per copy (`{{client.name}}`,
+  a `data-each` row per line item, `data-if` for optional parts), preview it with
+  sample values, then let an agent or any HTTP client generate finished PDFs from
+  data with one call to `POST /api/decks/{id}/render`. Built for quotes,
+  contracts and offer letters.
 - **Agent-ready** — a clean REST API (`/api/decks`, `/api/assets`) and an
   `agent.md` so an AI agent can author and present decks without a human in the
   loop.
