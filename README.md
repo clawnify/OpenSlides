@@ -41,10 +41,14 @@ visually (click any element) or in code.
   or a long line-item table flow naturally, with table headers repeated on each
   page.
 - **Templates with variables**: mark what changes per copy (`{{client.name}}`,
-  a `data-each` row per line item, `data-if` for optional parts), preview it with
-  sample values, then let an agent or any HTTP client generate finished PDFs from
-  data with one call to `POST /api/decks/{id}/render`. Built for quotes,
-  contracts and offer letters.
+  an image, a `data-each` row per line item, `data-if` for optional parts),
+  preview it with sample values, then let an agent or any HTTP client generate
+  finished PDFs from data with one call to `POST /api/decks/{id}/render`. Built
+  for quotes, contracts and offer letters.
+- **Client logos from a website**: a logo slot fills itself from the client's
+  website, square or full, for a light or dark background. Logos come from a
+  built-in brand library and the site's own icon, or from
+  [logo.dev](https://www.logo.dev) with your own key (`LOGO_DEV_SECRET_KEY`).
 - **Agent-ready** — a clean REST API (`/api/decks`, `/api/assets`) and an
   `agent.md` so an AI agent can author and present decks without a human in the
   loop.

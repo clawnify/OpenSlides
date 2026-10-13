@@ -6,6 +6,8 @@
 //   {{@root.currency}}           an outer (top-level) value, from anywhere
 //   <p data-if="discount_note">  keep this element only when the value is set
 //   <p data-unless="discount">   keep this element only when the value is NOT set
+//   <img data-logo="client.website">  the company logo for that website, looked
+//                                up before the fill (logos.ts); no website, no image
 //
 // Structure lives in attributes rather than in {{#section}} tags on purpose: the
 // editor re-serializes a page through the browser's HTML parser on every
@@ -29,8 +31,13 @@
 export interface Field {
   /** Dotted path: `client.name`. Inside a list, relative to the item. */
   name: string;
-  /** text = a string or number · list = repeated items · flag = only switches a data-if / data-unless element. */
-  type: "text" | "list" | "flag";
+  /**
+   * text = a string or number · image = used as an <img src> or a CSS url(),
+   * so it takes an image (https URL, data: image or an upload) · website = a
+   * website or domain a data-logo image shows the company logo of · list =
+   * repeated items · flag = only switches a data-if / data-unless element.
+   */
+  type: "text" | "image" | "website" | "list" | "flag";
   /** Every use sits inside a data-if / data-unless element (or is that switch itself), so leaving it out hides or shows that part instead of failing. */
   optional: boolean;
   /** A list's item fields. A list of plain strings has one field named `.` */
@@ -43,7 +50,26 @@ export interface FillResult {
   missing: string[];
   /** Values of the wrong kind, e.g. `line_items: expected a list`. */
   invalid: string[];
+  /** The logos the filled page shows, to look up before filling again with them. */
+  logos: LogoRequest[];
+  /** Notes that don't stop a render, e.g. a website with no logo found. */
+  warnings: string[];
 }
+
+export type LogoShape = "square" | "full";
+export type LogoTheme = "light" | "dark";
+
+/** One logo to look up: a company's website, the shape the slot wants and the background it sits on. */
+export interface LogoRequest {
+  domain: string;
+  shape: LogoShape;
+  theme: LogoTheme;
+}
+
+/** Looked-up logos by logoKey(): a data: URI, or null when none was found. */
+export type LogoMap = Map<string, string | null>;
+
+export const logoKey = (r: LogoRequest) => `${r.domain} ${r.shape} ${r.theme}`;
 
 export class TemplateTooLargeError extends Error {
   constructor() {
@@ -52,8 +78,11 @@ export class TemplateTooLargeError extends Error {
   }
 }
 
-/** Upper bound on one filled page, so nested lists can't balloon the render. */
-const MAX_OUTPUT = 4 * 1024 * 1024;
+/**
+ * Upper bound on one filled page, so nested lists can't balloon the render. It
+ * leaves room for embedded images (each at most 2 MB, see images.ts).
+ */
+const MAX_OUTPUT = 12 * 1024 * 1024;
 
 const NAME = "[A-Za-z_][\\w-]*(?:\\.[A-Za-z_][\\w-]*)*";
 const ROOT = "@root.";
@@ -67,7 +96,7 @@ const REF_RE = new RegExp(`^${REF}$`);
 
 /** Cheap check: does this content use any template syntax at all? */
 export function hasTemplate(content: string): boolean {
-  return /\{\{|\sdata-(?:each|if|unless)\s*=/.test(content);
+  return /\{\{|\sdata-(?:each|if|unless|logo)\s*=/.test(content);
 }
 
 /** True when `name` is usable as a variable name (`client.name`, `total`). */
@@ -80,7 +109,7 @@ export function isValidName(name: string): boolean {
 type Node =
   | { kind: "text"; text: string }
   | { kind: "raw"; text: string } // comments, doctypes, script/style bodies: never substituted
-  | { kind: "el"; name: string; start: string; end: string; children: Node[]; each: string | null; cond: string | null; unless: string | null };
+  | { kind: "el"; name: string; start: string; end: string; children: Node[]; each: string | null; cond: string | null; unless: string | null; logo: string | null };
 
 type El = Extract<Node, { kind: "el" }>;
 
@@ -131,7 +160,7 @@ function startTagEnd(src: string, i: number): number {
 }
 
 function parse(src: string): Node[] {
-  const root: El = { kind: "el", name: "#root", start: "", end: "", children: [], each: null, cond: null, unless: null };
+  const root: El = { kind: "el", name: "#root", start: "", end: "", children: [], each: null, cond: null, unless: null, logo: null };
   const stack: El[] = [root];
   const push = (n: Node) => stack[stack.length - 1].children.push(n);
 
@@ -204,6 +233,7 @@ function parse(src: string): Node[] {
     const el: El = {
       kind: "el", name, start, end: "", children: [],
       each: attrValue(start, "data-each"), cond: attrValue(start, "data-if"), unless: attrValue(start, "data-unless"),
+      logo: attrValue(start, "data-logo"),
     };
     push(el);
     if (VOID.has(name) || /\/\s*>$/.test(start)) continue;
@@ -238,6 +268,10 @@ interface Ctx {
   size: number;
   /** The top-level values, what {{@root.name}} reads from inside a row. */
   root: Scope;
+  /** Looked-up logos; absent on the first fill, which only collects `requests`. */
+  logos?: LogoMap;
+  requests: Map<string, LogoRequest>;
+  warnings: Set<string>;
 }
 
 const ESCAPES: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
@@ -335,7 +369,69 @@ function renderNodes(nodes: Node[], scope: Scope, ctx: Ctx): string {
 }
 
 function renderOnce(el: El, scope: Scope, ctx: Ctx): string {
-  return emit(ctx, substitute(el.start, scope, ctx, false)) + renderNodes(el.children, scope, ctx) + emit(ctx, el.end);
+  let src = "";
+  if (el.logo !== null) {
+    const logo = logoSrc(el.logo, el.start, scope, ctx);
+    if (logo === null) return "";
+    src = logo;
+  }
+  const start = substitute(el.start, scope, ctx, false);
+  return emit(ctx, src ? setSrc(start, src) : start) + renderNodes(el.children, scope, ctx) + emit(ctx, el.end);
+}
+
+/**
+ * A data-logo image's source: null leaves the image out (no website, or no logo
+ * found for it), "" keeps it as written (not looked up yet), else the data: URI.
+ */
+function logoSrc(ref: string, start: string, scope: Scope, ctx: Ctx): string | null {
+  const r = lookup(ref, scope, ctx);
+  // No website hides the image, as data-if would: a logo is never required.
+  if (!r.found || r.value === null || (typeof r.value === "string" && !r.value.trim())) return null;
+  const domain = typeof r.value === "string" ? websiteDomain(r.value) : null;
+  if (!domain) {
+    ctx.invalid.add(`${r.path}: expected a website or domain, like acme.com`);
+    return null;
+  }
+  const req: LogoRequest = { domain, ...logoOptions(start) };
+  ctx.requests.set(logoKey(req), req);
+  const uri = ctx.logos?.get(logoKey(req));
+  if (uri === undefined) return "";
+  if (uri === null) {
+    ctx.warnings.add(`${r.path}: no logo found for ${domain}, so the image is left out`);
+    return null;
+  }
+  return uri;
+}
+
+function logoOptions(start: string): { shape: LogoShape; theme: LogoTheme } {
+  return {
+    shape: attrValue(start, "data-logo-shape")?.toLowerCase() === "full" ? "full" : "square",
+    theme: attrValue(start, "data-logo-theme")?.toLowerCase() === "dark" ? "dark" : "light",
+  };
+}
+
+/** An <img> start tag with `src` set (replacing any src it had). */
+export function setSrc(start: string, src: string): string {
+  const without = start.replace(/\ssrc\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+)/i, "");
+  return without.replace(/^<img\b/i, `<img src="${src.replace(/"/g, "&quot;")}"`);
+}
+
+/**
+ * The domain a website value names: `https://www.acme.com/about`, `acme.com`
+ * and `jane@acme.com` all give `acme.com`. Null when it names no public domain
+ * (a company name, localhost, an IP address).
+ */
+export function websiteDomain(value: string): string | null {
+  const s = value.trim();
+  if (!s || /\s/.test(s)) return null;
+  let host: string;
+  try {
+    host = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(s) ? s : `https://${s}`).hostname;
+  } catch {
+    return null;
+  }
+  host = host.toLowerCase().replace(/\.$/, "").replace(/^www\./, "");
+  return /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,59})$/.test(host) ? host : null;
 }
 
 function renderEl(el: El, scope: Scope, ctx: Ctx): string {
@@ -386,24 +482,40 @@ function renderEl(el: El, scope: Scope, ctx: Ctx): string {
  * Sample values are never merged into strict values: a gap in a real document
  * must fail, not quietly print the sample's client name.
  */
-export function fillTemplate(template: string, values: unknown, opts: { strict: boolean }): FillResult {
+export function fillTemplate(template: string, values: unknown, opts: FillOptions): FillResult {
   const root: Scope = { value: isObject(values) ? values : {}, path: "", item: false };
-  const ctx: Ctx = { strict: opts.strict, missing: new Set(), invalid: new Set(), size: 0, root };
+  const ctx: Ctx = {
+    strict: opts.strict, missing: new Set(), invalid: new Set(), size: 0, root,
+    logos: opts.logos, requests: new Map(), warnings: new Set(),
+  };
   const html = renderNodes(parse(template), root, ctx);
-  return { html, missing: [...ctx.missing], invalid: [...ctx.invalid] };
+  return { html, missing: [...ctx.missing], invalid: [...ctx.invalid], logos: [...ctx.requests.values()], warnings: [...ctx.warnings] };
+}
+
+/**
+ * `logos`: the data-logo images' looked-up logos. Without it a fill only
+ * collects which logos the pages need (FillResult.logos); fill again with them.
+ */
+export interface FillOptions {
+  strict: boolean;
+  logos?: LogoMap;
 }
 
 /** Fill every page of a deck; gaps across all pages are reported once each. */
-export function fillPages(pages: string[], values: unknown, opts: { strict: boolean }): { pages: string[]; missing: string[]; invalid: string[] } {
+export function fillPages(pages: string[], values: unknown, opts: FillOptions): Omit<FillResult, "html"> & { pages: string[] } {
   const missing = new Set<string>();
   const invalid = new Set<string>();
+  const warnings = new Set<string>();
+  const logos = new Map<string, LogoRequest>();
   const out = pages.map((p) => {
     const r = fillTemplate(p, values, opts);
     r.missing.forEach((m) => missing.add(m));
     r.invalid.forEach((m) => invalid.add(m));
+    r.warnings.forEach((m) => warnings.add(m));
+    r.logos.forEach((l) => logos.set(logoKey(l), l));
     return r.html;
   });
-  return { pages: out, missing: [...missing], invalid: [...invalid] };
+  return { pages: out, missing: [...missing], invalid: [...invalid], logos: [...logos.values()], warnings: [...warnings] };
 }
 
 // ── listing variables ─────────────────────────────────────────────────
@@ -423,12 +535,13 @@ function collectUses(nodes: Node[], lists: string[], guarded: boolean, uses: Use
     if (ref.startsWith(ROOT)) uses.push({ name: ref.slice(ROOT.length), type, guarded: g, lists: [] });
     else uses.push({ name: ref, type, guarded: g, lists: at });
   };
-  const tokens = (text: string, g: boolean, at: string[]) => {
+  // `images`: the references a start tag uses as an image source.
+  const tokens = (text: string, g: boolean, at: string[], images?: Set<string>) => {
     for (const m of text.matchAll(ANY_BRACES_RE)) {
       const t = m[0].match(WHOLE_TOKEN_RE);
       if (!t) problems.add(`"${m[0]}" is not a variable: use letters, digits, _ and dots, e.g. {{client.name}}`);
       else if (t[1] === "." && !at.length) problems.add("{{.}} only works inside a data-each element");
-      else use(t[1], "text", g, at);
+      else use(t[1], images?.has(t[1]) ? "image" : "text", g, at);
     }
   };
   for (const n of nodes) {
@@ -449,13 +562,35 @@ function collectUses(nodes: Node[], lists: string[], guarded: boolean, uses: Use
         } else problems.add(`data-each="${n.each}" is not a valid variable name`);
       }
       // The element's own attributes are filled per item too, so they read from the inner scope.
-      tokens(n.start, g, inner);
+      if (n.logo !== null) {
+        if (n.name !== "img") problems.add(`data-logo="${n.logo}" works on an <img> only`);
+        if (REF_RE.test(n.logo)) use(n.logo, "website", true, inner);
+        else problems.add(`data-logo="${n.logo}" is not a valid variable name`);
+        for (const [attr, allowed] of LOGO_OPTIONS) {
+          const v = attrValue(n.start, attr);
+          if (v !== null && !(allowed as readonly string[]).includes(v.toLowerCase())) problems.add(`${attr}="${v}" must be ${allowed.join(" or ")}`);
+        }
+      }
+      tokens(n.start, g, inner, imageRefs(n));
       collectUses(n.children, inner, g, uses, problems);
     }
   }
 }
 
-const KIND_RANK: Record<Field["type"], number> = { flag: 0, text: 1, list: 2 };
+const LOGO_OPTIONS = [["data-logo-shape", ["square", "full"]], ["data-logo-theme", ["light", "dark"]]] as const;
+
+const IMG_SRC_RE = new RegExp(`\\ssrc\\s*=\\s*(["'])\\s*\\{\\{\\s*(${REF})\\s*\\}\\}\\s*\\1`, "gi");
+const CSS_URL_RE = new RegExp(`url\\(\\s*(["']?)\\s*\\{\\{\\s*(${REF})\\s*\\}\\}\\s*\\1\\s*\\)`, "gi");
+
+/** References an element uses as a whole image source: an <img src="{{x}}"> or a CSS url({{x}}). */
+function imageRefs(el: El): Set<string> {
+  const refs = new Set<string>();
+  if (el.name === "img") for (const m of el.start.matchAll(IMG_SRC_RE)) refs.add(m[2]);
+  for (const m of el.start.matchAll(CSS_URL_RE)) refs.add(m[2]);
+  return refs;
+}
+
+const KIND_RANK: Record<Field["type"], number> = { flag: 0, text: 1, website: 2, image: 2, list: 3 };
 
 function buildFields(uses: Use[], depth: number, problems: Set<string>): Field[] {
   const byName = new Map<string, { field: Field; allGuarded: boolean; kinds: Set<Field["type"]> }>();
@@ -483,7 +618,8 @@ function buildFields(uses: Use[], depth: number, problems: Set<string>): Field[]
   return order.map((name) => {
     const { field, allGuarded, kinds } = byName.get(name)!;
     field.optional = allGuarded;
-    if (kinds.has("list") && kinds.has("text")) problems.add(`"${name}" is used both as a list (data-each) and as text`);
+    if (kinds.has("list") && (kinds.has("text") || kinds.has("image") || kinds.has("website"))) problems.add(`"${name}" is used both as a list (data-each) and as a value`);
+    if (kinds.has("image") && kinds.has("website")) problems.add(`"${name}" is used both as an image and as a logo's website`);
     if (field.type === "list") {
       const items = buildFields(nested.get(name) ?? [], depth + 1, problems);
       // No names inside the repeated element: a list of plain strings, read with {{.}}.
@@ -558,6 +694,68 @@ function exampleObject(fields: Field[], sample: Record<string, unknown>): Record
  */
 export function exampleValues(fields: Field[], sample: unknown): Record<string, unknown> {
   return exampleObject(fields, isObject(sample) ? sample : {});
+}
+
+// ── image values ──────────────────────────────────────────────────────
+
+export interface ImageValue {
+  /** Where it sits in the values: `client.logo`, `line_items[2].icon`. */
+  path: string;
+  value: unknown;
+}
+
+function walkImages(
+  fields: Field[],
+  obj: unknown,
+  base: string,
+  visit: (path: string, holder: Record<string, unknown>, key: string, value: unknown) => void,
+): void {
+  for (const f of fields) {
+    if (f.type !== "image" && f.type !== "list") continue;
+    const at = locate(obj, f.name);
+    if (!at) continue;
+    const path = joinPath(base, f.name);
+    const value = at.holder[at.key];
+    if (f.type === "image") visit(path, at.holder, at.key, value);
+    else if (Array.isArray(value)) value.forEach((item, i) => walkImages(f.fields ?? [], item, `${path}[${i}]`, visit));
+  }
+}
+
+/** Where a dotted path's value lives, as resolvePath finds it: nested first, then a flat key. */
+function locate(obj: unknown, path: string): { holder: Record<string, unknown>; key: string } | null {
+  if (!isObject(obj)) return null;
+  const parts = path.split(".");
+  let holder: unknown = obj;
+  for (const part of parts.slice(0, -1)) {
+    if (!isObject(holder) || !own(holder, part)) {
+      holder = null;
+      break;
+    }
+    holder = holder[part];
+  }
+  const last = parts[parts.length - 1];
+  if (isObject(holder) && own(holder, last) && holder[last] !== undefined) return { holder, key: last };
+  if (own(obj, path) && obj[path] !== undefined) return { holder: obj, key: path };
+  return null;
+}
+
+/** Every value the pages use as an image, with its path. Absent and null values are skipped. */
+export function imageValues(fields: Field[], values: unknown): ImageValue[] {
+  const out: ImageValue[] = [];
+  walkImages(fields, values, "", (path, _h, _k, value) => {
+    if (value !== null && value !== undefined) out.push({ path, value });
+  });
+  return out;
+}
+
+/** A copy of `values` with each image path in `replaced` swapped for its new value (e.g. an embedded data: URI). */
+export function withImages(fields: Field[], values: unknown, replaced: Map<string, string>): Record<string, unknown> {
+  const copy = (isObject(values) ? structuredClone(values) : {}) as Record<string, unknown>;
+  walkImages(fields, copy, "", (path, holder, key) => {
+    const next = replaced.get(path);
+    if (next !== undefined) holder[key] = next;
+  });
+  return copy;
 }
 
 /** Top-level keys a caller sent that no page uses: most likely a typo. A flat key (`"client.name"`) counts as used. */

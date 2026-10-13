@@ -219,6 +219,7 @@ export const QUOTE_TEMPLATES: SlideTemplate[] = [
   </div>
   <div style="display:flex;justify-content:space-between;gap:48px;margin-top:36px;break-inside:avoid;${band}">
     <div>
+      <img data-logo="client.website" data-logo-shape="full" alt="" style="display:block;height:56px;max-width:240px;object-fit:contain;object-position:left center;margin:0 0 18px">
       <p style="${label}">{{client.company}}</p>
       <p style="margin:6px 0 0">{{client.address}}</p>
       <p style="margin:6px 0 0" data-if="client.vat">VAT {{client.vat}}</p>
