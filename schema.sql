@@ -53,5 +53,8 @@ CREATE TABLE IF NOT EXISTS assets (
   role TEXT NOT NULL DEFAULT 'media',
   -- for role='reference': the brand this original belongs to
   brand_id TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- when a render last used this upload as an image value; such an upload is
+  -- kept for 30 days after that use even if no page references it
+  last_used_at TEXT
 );

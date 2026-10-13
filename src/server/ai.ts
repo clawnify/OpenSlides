@@ -144,6 +144,12 @@ prospect), mark what changes per copy instead of writing one example:
   To show an outer value in every row, write \`{{@root.currency}}\`.
 - \`data-if="discount_note"\` on an element that shows only when that value is
   set; \`data-unless="discount_note"\` for one that shows only when it is not.
+- An image that changes per copy: \`<img data-if="photo" src="{{photo}}" alt="">\`.
+  Its value is an image URL.
+- A client's company logo: \`<img data-logo="client.website" alt=""
+  style="height:48px;object-fit:contain">\`, filled from the client's website.
+  Add \`data-logo-shape="full"\` for the wide logo with the name, and
+  \`data-logo-theme="dark"\` when it sits on a dark background.
 - Put structure in those attributes, never as {{#section}} tags.
 - Values arrive formatted: never compute totals or format currency in the page.
 - Text that never changes (the terms) stays literal.

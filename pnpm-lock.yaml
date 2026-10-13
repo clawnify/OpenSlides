@@ -20,6 +20,9 @@ importers:
       '@clawnify/db':
         specifier: ^0.4.2
         version: 0.4.2(@cloudflare/workers-types@4.20260613.1)(@opentelemetry/api@1.9.1)
+      '@clawnify/logokit':
+        specifier: ^0.3.0
+        version: 0.3.0
       '@hono/zod-openapi':
         specifier: ^1.5.1
         version: 1.5.1(hono@4.12.25)(zod@4.4.3)
@@ -236,6 +239,11 @@ packages:
 
   '@clawnify/db@0.4.2':
     resolution: {integrity: sha512-s+G/5bDVFx7Na8WVETfl8EhyPcbmgs5LIE1TsM0vGUOAtPihQGlVX1xpfmg5lsMv8+OChKaHsZIMnzpXY8pyAw==}
+
+  '@clawnify/logokit@0.3.0':
+    resolution: {integrity: sha512-zl1Km86CoX6FeZTFOWPiarxDOn8OKNwMUklMhrBql9Xj/nPp2CEtlF+p7uptvacqnNO+jrXLJvoB4PqKi+5TXQ==}
+    engines: {node: '>=18'}
+    hasBin: true
 
   '@clawnify/routes@0.2.2':
     resolution: {integrity: sha512-+s7gjRyH8bmIUHQDHmmwGyUeEcV5m+IoWEYr2tLiWdVW7WKlFlgeKIuJ61vW9mc9k4TizL+B+Tg8qJ72zAbvOA==}
@@ -2741,6 +2749,8 @@ snapshots:
       - prisma
       - sql.js
       - sqlite3
+
+  '@clawnify/logokit@0.3.0': {}
 
   '@clawnify/routes@0.2.2(@hono/zod-openapi@1.5.1(hono@4.12.25)(zod@4.4.3))(hono@4.12.25)':
     dependencies:
