@@ -13,7 +13,7 @@
   },
 
   "env": {
-    "optional": ["OPENROUTER_API_KEY", "ANTHROPIC_API_KEY"]
+    "optional": ["OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "LOGO_DEV_SECRET_KEY"]
   },
 
   "deploy": {

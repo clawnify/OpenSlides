@@ -7,12 +7,15 @@ import {
   getUploadBytes,
   deleteUpload,
   makeKey,
+  logoCache,
   PLACEHOLDER_KEY,
 } from "./uploads";
 import { bodyLimit } from "hono/body-limit";
 import { revealDoc, revealViewScript } from "./reveal";
 import { renderDeckPdf, renderDeckPdfLink, renderSlidePng, renderSlidePngLink, PdfRenderError } from "./pdf";
-import { collectFields, exampleValues, fillPages, fillTemplate, hasTemplate, TemplateTooLargeError, unusedKeys } from "./variables";
+import { collectFields, exampleValues, fillPages, hasTemplate, imageValues, setSrc, TemplateTooLargeError, unusedKeys, withImages } from "./variables";
+import { resolveImages } from "./images";
+import { resolveLogos, type LogoDeps } from "./logos";
 import { parseTokens, brandHead, brandLogoTag, brandGuideHtml, extractExampleSlides, extractBrandExamples, setTokensInMd, DEFAULT_BRAND_MD, type BrandTokens } from "./brand";
 import { TEMPLATES, templatesFor } from "./templates";
 import { FORMATS, DEFAULT_FORMAT_ID, safeFormat, type PageFormat } from "./formats";
@@ -30,6 +33,9 @@ type Bindings = {
   // when both are present.
   OPENROUTER_API_KEY?: string;
   ANTHROPIC_API_KEY?: string;
+  // Optional logo.dev secret key: company logos (data-logo) come from logo.dev
+  // first. Saved in the org's Environment Variables, it reaches the app live.
+  LOGO_DEV_SECRET_KEY?: string;
 };
 
 // createApp bakes in OpenAPIHono construction, the per-request initDB
@@ -100,9 +106,24 @@ function sampleToStore(v: unknown): { ok: true; json: string } | { ok: false; er
  * what the editor preview and the in-app PDF export show. Never used to fill a
  * render API request, where a gap must fail instead.
  */
-function withSamples(row: Pick<Deck, "content" | "sample_values">): string {
+async function withSamples(row: Pick<Deck, "content" | "sample_values">, env: Bindings): Promise<string> {
   if (!hasTemplate(row.content)) return row.content;
-  return joinDeck(fillPages(splitDeck(row.content), parseSample(row.sample_values), { strict: false }).pages);
+  return joinDeck((await fillWithLogos(splitDeck(row.content), parseSample(row.sample_values), env)).pages);
+}
+
+const logoDeps = (env: Bindings): LogoDeps => ({
+  fetch: (input, init) => fetch(input, init),
+  cache: logoCache,
+  logoDevKey: env.LOGO_DEV_SECRET_KEY || undefined,
+});
+
+/** A lenient fill that also shows the pages' data-logo images (a second fill, once they are looked up). */
+async function fillWithLogos(pages: string[], values: unknown, env: Bindings): Promise<ReturnType<typeof fillPages>> {
+  const first = fillPages(pages, values, { strict: false });
+  if (!first.logos.length) return first;
+  const { logos, warnings } = await resolveLogos(first.logos, logoDeps(env));
+  const filled = fillPages(pages, values, { strict: false, logos });
+  return { ...filled, warnings: [...warnings, ...filled.warnings] };
 }
 
 // Pagination is a single mutually-exclusive choice.
@@ -207,7 +228,7 @@ app.get("/api/decks/:id/view", async (c) => {
   let content = row.content;
   if (preview) {
     try {
-      content = withSamples(row);
+      content = await withSamples(row, c.env);
     } catch (e) {
       if (!(e instanceof TemplateTooLargeError)) throw e; // too large to preview: show the template itself
     }
@@ -218,7 +239,7 @@ app.get("/api/decks/:id/view", async (c) => {
   return c.html(
     revealDoc({
       mode: "view",
-      content: rewriteAssetsForView(baked),
+      content: rewriteAssetsForView(preview ? baked : showImageSlots(baked)),
       theme: row.theme,
       format: safeFormat(row.format),
       brandHeadHtml: brandHead(tokens),
@@ -293,7 +314,7 @@ app.post("/api/decks/:id/generate", async (c) => {
       if (!c.env.CLAWNIFY_TOKEN) return null; // no managed render off-platform
       if (index < 0 || index >= chunks.length) return null;
       try {
-        const html = await slidePrintHtml(chunks[index], deck.theme, parseTokens(designMd), format);
+        const html = await slidePrintHtml(showImageSlots(chunks[index]), deck.theme, parseTokens(designMd), format);
         return arrayBufferToBase64(await renderSlidePng(c.env.CLAWNIFY_TOKEN, html, format.page));
       } catch (e) {
         console.error("view_slide render failed", e);
@@ -619,7 +640,7 @@ const ErrorSchema = z.object({ error: z.string(), detail: z.string().optional() 
 
 const FieldSchema = z.object({
   name: z.string().describe("Dotted path, e.g. client.name. Inside a list, relative to the item."),
-  type: z.enum(["text", "list", "flag"]).describe("text: a string or number. list: repeated items (data-each). flag: only switches a data-if part."),
+  type: z.enum(["text", "image", "website", "list", "flag"]).describe("text: a string or number. image: an https image URL, a data:image URI or an upload (assets/<key>). website: a website or domain (acme.com); a data-logo image shows that company's logo. list: repeated items (data-each). flag: only switches a data-if / data-unless part."),
   optional: z.boolean().describe("Leaving it out hides its part instead of failing the render."),
   fields: z.array(z.any()).optional().describe("A list's item fields, same shape. A list of plain strings has one field named '.'."),
 });
@@ -647,6 +668,10 @@ app.openapi(fieldsRoute, async (c) => {
   const { fields, problems } = collectFields(splitDeck(row.content));
   return c.json({ fields, example: exampleValues(fields, parseSample(row.sample_values)), problems }, 200);
 });
+
+// The whole filled document, embedded images and logos included, as sent to the
+// PDF service: past this a render gets slow enough to time out (see images.ts).
+const MAX_DOCUMENT_CHARS = 8 * 1024 * 1024;
 
 const RenderBody = z.object({
   values: z.record(z.string(), z.unknown()).describe("The template's values. GET /api/decks/{id}/fields returns a complete example."),
@@ -679,6 +704,7 @@ const renderRoute = createRoute({
             content_type: z.string(),
             filename: z.string(),
             unused: z.array(z.string()).describe("Top-level keys no page uses (likely typos)"),
+            warnings: z.array(z.string()).describe("What the document left out without failing, e.g. a website with no logo found"),
           }),
         },
       },
@@ -718,6 +744,8 @@ app.openapi(
     }
 
     const pages = splitDeck(row.content);
+    const { fields } = collectFields(pages);
+    const hint = "GET /api/decks/{id}/fields lists every value with an example.";
     let filled: ReturnType<typeof fillPages>;
     try {
       filled = fillPages(pages, b.values, { strict: true });
@@ -725,15 +753,50 @@ app.openapi(
       if (e instanceof TemplateTooLargeError) return c.json({ error: e.message }, 413);
       throw e;
     }
-    const unused = unusedKeys(collectFields(pages).fields, b.values);
+    const unused = unusedKeys(fields, b.values);
     if (filled.missing.length || filled.invalid.length) {
       return c.json({
         error: filled.missing.length ? ("missing_values" as const) : ("invalid_values" as const),
         missing: filled.missing,
         invalid: filled.invalid,
         unused, // a misspelled key shows up here and as missing
-        hint: "GET /api/decks/{id}/fields lists every value with an example.",
+        hint,
       }, 422);
+    }
+
+    // Image values: fetch, check and embed each one, or name the one that failed,
+    // so a document never goes out with a blank where a logo should be. Company
+    // logos (data-logo) are looked up alongside; one not found is left out with
+    // a warning, since whether a company has a logo is not the caller's to fix.
+    const [images, logos] = await Promise.all([
+      resolveImages(imageValues(fields, b.values), {
+        fetch: (input, init) => fetch(input, init),
+        getAsset: async (key) => (key === PLACEHOLDER_KEY || (await get("SELECT id FROM assets WHERE key = ?", [key])) ? getUploadBytes(key) : null),
+      }),
+      filled.logos.length ? resolveLogos(filled.logos, logoDeps(c.env)) : null,
+    ]);
+    if (images.invalid.length) {
+      return c.json({ error: "invalid_values" as const, missing: [], invalid: images.invalid, unused, hint }, 422);
+    }
+    try {
+      if (images.replaced.size || logos) {
+        const values = images.replaced.size ? withImages(fields, b.values, images.replaced) : b.values;
+        filled = fillPages(pages, values, { strict: true, logos: logos?.logos });
+      }
+    } catch (e) {
+      if (e instanceof TemplateTooLargeError) return c.json({ error: e.message }, 413);
+      throw e;
+    }
+    const warnings = [...(logos?.warnings ?? []), ...filled.warnings];
+    if (filled.pages.reduce((n, p) => n + p.length, 0) > MAX_DOCUMENT_CHARS) {
+      return c.json({ error: "The filled document is too large. Use fewer or smaller images." }, 413);
+    }
+    // An upload used in a render is kept for 30 days after its last use (see the sweep).
+    if (images.usedAssets.length) {
+      await run(
+        `UPDATE assets SET last_used_at = datetime('now') WHERE key IN (${images.usedAssets.map(() => "?").join(", ")})`,
+        images.usedAssets,
+      );
     }
 
     const filename = `${makeKey(b.filename?.replace(/\.pdf$/i, "") || row.title || "document")}.pdf`;
@@ -741,7 +804,7 @@ app.openapi(
     try {
       const html = await deckPrintHtml(row, joinDeck(filled.pages));
       const link = await renderDeckPdfLink(c.env.CLAWNIFY_TOKEN, html, safeFormat(row.format).page, { filename, expiresIn });
-      return c.json({ ...link, filename, unused }, 200);
+      return c.json({ ...link, filename, unused, warnings }, 200);
     } catch (err) {
       const detail = err instanceof PdfRenderError ? err.detail || err.message : String(err);
       return c.json({ error: "pdf_render_failed", detail }, 502);
@@ -769,7 +832,7 @@ app.get("/api/decks/:id/pdf", async (c) => {
 
   let content: string;
   try {
-    content = withSamples(row);
+    content = await withSamples(row, c.env);
   } catch (e) {
     if (e instanceof TemplateTooLargeError) return c.json({ error: e.message }, 413);
     throw e;
@@ -825,7 +888,7 @@ app.get("/api/decks/:id/slide/:n", async (c) => {
   const format = safeFormat(row.format);
   try {
     // ?sample=1 → the page filled with the deck's sample values, as previewed.
-    const chunk = c.req.query("sample") === "1" ? fillTemplate(chunks[n], parseSample(row.sample_values), { strict: false }).html : chunks[n];
+    const chunk = c.req.query("sample") === "1" ? (await fillWithLogos([chunks[n]], parseSample(row.sample_values), c.env)).pages[0] : showImageSlots(chunks[n]);
     const html = await slidePrintHtml(chunk, row.theme, tokens, format);
     // ?output=url → a presigned link instead of bytes: agents calling through
     // API proxies can't receive binary bodies, but they can fetch/vision a URL.
@@ -1111,8 +1174,10 @@ const ASSET_REF_RE = /assets\/([A-Za-z0-9._-]+)/g;
 // A short grace period spares freshly-uploaded assets whose reference hasn't
 // been saved yet (the editor saves on a debounce).
 async function sweepOrphanAssets(): Promise<void> {
+  // An upload a render used as an image value stays for 30 days after that use,
+  // so an agent can upload a client's logo once and keep rendering with it.
   const stale = await query<{ id: string; key: string }>(
-    "SELECT id, key FROM assets WHERE role = 'media' AND created_at < datetime('now', '-120 seconds')",
+    "SELECT id, key FROM assets WHERE role = 'media' AND created_at < datetime('now', '-120 seconds') AND (last_used_at IS NULL OR last_used_at < datetime('now', '-30 days'))",
   );
   if (stale.length === 0) return;
 
@@ -1143,6 +1208,22 @@ function scheduleSweep(c: { executionCtx?: { waitUntil(p: Promise<unknown>): voi
     /* no execution context (e.g. some dev paths) — the promise still runs */
   }
 }
+
+// Template view: an <img src="{{client.logo}}"> has nothing to load yet, so it
+// shows the built-in placeholder instead of a broken image, and a company logo
+// (data-logo) shows a "Company logo" box. Only the served copy changes;
+// clicking either in the editor points at the variable's sample value.
+function showImageSlots(s: string): string {
+  return s
+    .replace(/(<img\b[^>]*?\ssrc\s*=\s*)(["'])\s*\{\{[^{}]*\}\}\s*\2/gi, `$1$2assets/${PLACEHOLDER_KEY}$2`)
+    .replace(/<img\b[^>]*\sdata-logo\s*=[^>]*>/gi, (tag) => setSrc(tag, LOGO_SLOT_SRC));
+}
+
+const LOGO_SLOT_SRC = `data:image/svg+xml;base64,${btoa(
+  `<svg xmlns="http://www.w3.org/2000/svg" width="240" height="96" viewBox="0 0 240 96">` +
+    `<rect x="1.5" y="1.5" width="237" height="93" rx="10" fill="#F4F3F0" stroke="#A9A59D" stroke-width="2" stroke-dasharray="6 5"/>` +
+    `<text x="120" y="55" text-anchor="middle" font-family="-apple-system,system-ui,sans-serif" font-size="20" fill="#8E8A82">Company logo</text></svg>`,
+)}`;
 
 // View mode: media is same-origin with the app, so point `assets/<key>` at the
 // served R2 route.

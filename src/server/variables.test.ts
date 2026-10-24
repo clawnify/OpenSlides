@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { collectFields, exampleValues, fillPages, fillTemplate, hasTemplate, TemplateTooLargeError, unusedKeys } from "./variables";
+import { collectFields, exampleValues, fillPages, fillTemplate, hasTemplate, imageValues, logoKey, TemplateTooLargeError, unusedKeys, websiteDomain, withImages } from "./variables";
 
 const QUOTE = `<!-- html -->
 <!-- .slide: data-flow -->
@@ -118,7 +118,7 @@ describe("fillTemplate", () => {
   });
 
   it("refuses a fill that would blow up in size", () => {
-    const rows = Array.from({ length: 3000 }, () => ({ n: "x".repeat(2000) }));
+    const rows = Array.from({ length: 3000 }, () => ({ n: "x".repeat(5000) }));
     expect(() => fillTemplate(`<p data-each="rows">{{n}}</p>`, { rows }, { strict: true })).toThrow(TemplateTooLargeError);
   });
 });
@@ -193,7 +193,7 @@ describe("collectFields", () => {
     expect(problems).toEqual([]);
     expect(fields).toEqual([
       { name: "client.name", type: "text", optional: false },
-      { name: "client.logo", type: "text", optional: false },
+      { name: "client.logo", type: "image", optional: false },
       {
         name: "line_items",
         type: "list",
@@ -235,6 +235,41 @@ describe("collectFields", () => {
   });
 });
 
+describe("image variables", () => {
+  const TPL = `<img data-if="client.logo" src="{{client.logo}}" alt="{{client.name}}">
+<div style="background:url('{{hero}}') center/cover"></div>
+<img src="https://cdn.test/{{slug}}.png">
+<tr data-each="rows"><td><img src="{{icon}}"> {{label}} <img src="{{@root.badge}}"></td></tr>`;
+
+  it("types a variable used as a whole image source as image", () => {
+    const { fields } = collectFields([TPL]);
+    const byName = Object.fromEntries(fields.map((f) => [f.name, f.type]));
+    expect(byName).toMatchObject({ "client.logo": "image", "client.name": "text", hero: "image", slug: "text", rows: "list", badge: "image" });
+    expect(fields.find((f) => f.name === "rows")!.fields).toEqual([
+      { name: "icon", type: "image", optional: false },
+      { name: "label", type: "text", optional: false },
+    ]);
+  });
+
+  it("finds every image value with its path, nested, flat and per row", () => {
+    const { fields } = collectFields([TPL]);
+    const values = { "client.logo": "L", client: { name: "N" }, hero: null, rows: [{ icon: "I0" }, { label: "no icon" }], badge: "B" };
+    expect(imageValues(fields, values)).toEqual([
+      { path: "client.logo", value: "L" },
+      { path: "rows[0].icon", value: "I0" },
+      { path: "badge", value: "B" },
+    ]);
+  });
+
+  it("swaps resolved images into a copy of the values, wherever each was found", () => {
+    const { fields } = collectFields([TPL]);
+    const values = { "client.logo": "L", client: { name: "N" }, rows: [{ icon: "I0", label: "x" }], badge: "B" };
+    const out = withImages(fields, values, new Map([["client.logo", "data:L"], ["rows[0].icon", "data:I0"], ["badge", "data:B"]]));
+    expect(out).toEqual({ "client.logo": "data:L", client: { name: "N" }, rows: [{ icon: "data:I0", label: "x" }], badge: "data:B" });
+    expect(values["client.logo"]).toBe("L"); // the caller's object is untouched
+  });
+});
+
 describe("exampleValues", () => {
   it("builds a complete body from samples, with placeholders only for required values", () => {
     const { fields } = collectFields([QUOTE]);
@@ -269,5 +304,93 @@ describe("helpers", () => {
 
   it("spots data-unless as template syntax", () => {
     expect(hasTemplate(`<p data-unless="x">`)).toBe(true);
+  });
+});
+
+describe("company logos (data-logo)", () => {
+  const PAGE = `<div><img data-logo="client.website" data-logo-shape="full" alt="" style="height:40px"><p>{{client.name}}</p></div>`;
+  const ROWS = `<ul><li data-each="partners"><img data-logo="site" data-logo-theme="dark" src="x.png"></li></ul>`;
+
+  it("lists the website as an optional website field, required once it is also printed", () => {
+    expect(collectFields([PAGE]).fields).toEqual([
+      { name: "client.website", type: "website", optional: true },
+      { name: "client.name", type: "text", optional: false },
+    ]);
+    const printed = collectFields([`${PAGE}<p>{{client.website}}</p>`]).fields.find((f) => f.name === "client.website");
+    expect(printed).toEqual({ name: "client.website", type: "website", optional: false });
+    expect(collectFields([ROWS]).fields).toEqual([
+      { name: "partners", type: "list", optional: false, fields: [{ name: "site", type: "website", optional: true }] },
+    ]);
+    expect(hasTemplate(`<img data-logo="client.website">`)).toBe(true);
+  });
+
+  it("reports misuse", () => {
+    const { problems } = collectFields([
+      `<div data-logo="client.website"></div><img data-logo="bad name"><img data-logo="a" data-logo-shape="round" data-logo-theme="Dark"><img data-logo="b"><img src="{{b}}">`,
+    ]);
+    expect(problems).toEqual([
+      'data-logo="client.website" works on an <img> only',
+      'data-logo="bad name" is not a valid variable name',
+      'data-logo-shape="round" must be square or full',
+      '"b" is used both as an image and as a logo\'s website',
+    ]);
+  });
+
+  it("collects the logos to look up, then shows them, and leaves out one not found", () => {
+    const values = { client: { name: "Acme", website: "https://www.Acme.com/about" } };
+    const first = fillTemplate(PAGE, values, { strict: true });
+    expect(first.missing).toEqual([]);
+    expect(first.logos).toEqual([{ domain: "acme.com", shape: "full", theme: "light" }]);
+    expect(first.html).toContain('<img data-logo="client.website"'); // unchanged until looked up
+
+    const key = logoKey(first.logos[0]);
+    const shown = fillTemplate(PAGE, values, { strict: true, logos: new Map([[key, "data:image/png;base64,AAAA"]]) });
+    expect(shown.html).toContain('<img src="data:image/png;base64,AAAA" data-logo="client.website"');
+    expect(shown.warnings).toEqual([]);
+
+    const none = fillTemplate(PAGE, values, { strict: true, logos: new Map([[key, null]]) });
+    expect(none.html).not.toContain("<img");
+    expect(none.warnings).toEqual(["client.website: no logo found for acme.com, so the image is left out"]);
+  });
+
+  it("hides the image without a website, and refuses a value that is not one", () => {
+    for (const website of [undefined, null, "", "  "]) {
+      const r = fillTemplate(PAGE, { client: { name: "Acme", website } }, { strict: true });
+      expect(r.html).not.toContain("<img");
+      expect(r.missing).toEqual([]);
+      expect(r.logos).toEqual([]);
+    }
+    const bad = fillTemplate(PAGE, { client: { name: "Acme", website: "Acme Inc" } }, { strict: true });
+    expect(bad.invalid).toEqual(["client.website: expected a website or domain, like acme.com"]);
+    expect(bad.html).not.toContain("<img");
+  });
+
+  it("looks up a logo per row, replacing any src the image had", () => {
+    const values = { partners: [{ site: "stripe.com" }, { site: "linear.app" }, { site: "stripe.com" }] };
+    const first = fillPages([ROWS], values, { strict: true });
+    expect(first.logos).toEqual([
+      { domain: "stripe.com", shape: "square", theme: "dark" },
+      { domain: "linear.app", shape: "square", theme: "dark" },
+    ]);
+    const logos = new Map(first.logos.map((l) => [logoKey(l), `data:image/svg+xml;base64,${l.domain}`]));
+    const html = fillPages([ROWS], values, { strict: true, logos }).pages[0];
+    expect(html.match(/<img src="data:image\/svg\+xml;base64,(stripe\.com|linear\.app)" data-logo="site" data-logo-theme="dark">/g)).toHaveLength(3);
+    expect(html).not.toContain("x.png");
+  });
+});
+
+describe("websiteDomain", () => {
+  it("reads a domain from the ways people write a website", () => {
+    expect(websiteDomain("acme.com")).toBe("acme.com");
+    expect(websiteDomain("https://www.Acme.com/about?x=1")).toBe("acme.com");
+    expect(websiteDomain("http://shop.acme.co.uk:8080/")).toBe("shop.acme.co.uk");
+    expect(websiteDomain("jane@acme.com")).toBe("acme.com");
+    expect(websiteDomain(" www.harborandpine.nl/ ")).toBe("harborandpine.nl");
+    expect(websiteDomain("café.fr")).toBe("xn--caf-dma.fr");
+  });
+  it("refuses what names no public domain", () => {
+    for (const v of ["Acme Inc", "acme", "localhost", "192.168.1.1", "[::1]", "http://", "acme.c", "acme.com/about us"]) {
+      expect(websiteDomain(v)).toBeNull();
+    }
   });
 });

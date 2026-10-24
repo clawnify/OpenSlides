@@ -129,8 +129,11 @@ then reference it by path `assets/<key>`: `<img src="assets/<key>">` or
 referenced images automatically — you don't attach them.
 
 There is no media library to list: an asset exists only while a slide (or a
-brand logo) references it. Remove the reference and the file is garbage-collected
-from storage, so don't upload media you aren't going to place on a slide.
+brand logo, or a deck's sample values) references it. Remove the reference and
+the file is garbage-collected from storage, so don't upload media you aren't
+going to place on a slide. The exception is an upload passed as an image value
+to `POST /api/decks/{id}/render`: render with it within a couple of minutes of
+uploading, and it is then kept for 30 days after each render that uses it.
 
 **Image placeholders.** `assets/placeholder.svg` is a built-in virtual asset (no
 upload needed, never garbage-collected): use it for image slots the user fills
@@ -180,6 +183,7 @@ then renders any number of finished PDFs from data, without editing the deck.
 | `{{@root.currency}}` | a top-level value, read from anywhere, including inside a `data-each` row. |
 | `<p data-if="discount_note">` | keep this element only when `discount_note` is set. Absent, `null`, empty, `false`, `0`, `[]` and the strings `"false"` and `"0"` hide it. |
 | `<p data-unless="discount_note">` | the opposite: keep this element only when `discount_note` is **not** set. |
+| `<img data-logo="client.website">` | the company logo for the website in `client.website`, looked up when the document is made. No website, no image. |
 
 ```html
 <table>
@@ -210,7 +214,30 @@ Rules:
 - `data-if` and `data-each` on one element: `data-if` decides whether it appears
   at all, then `data-each` repeats it, which is how an **optional list** works.
 - Values are HTML-escaped, and a line break in a value prints as a line break
-  (an address on several lines). An image value is an https URL.
+  (an address on several lines).
+- **Images.** A variable used as a whole image source,
+  `<img src="{{client.logo}}" alt="">` or `style="background:url('{{hero}}')"`,
+  is listed by `/fields` with type `image`. Its value is an `https://` image URL,
+  a `data:image/…` URI, or an upload of this app (`assets/<key>` from
+  `POST /api/assets`). The render fetches each image itself and embeds it in the
+  PDF; one it can't use (a 404, a web page instead of an image, too large) is a
+  `422` naming it: `client.logo: image could not be loaded (HTTP 404)`. Limits:
+  2 MB per image, 4 MB of images per document. Put `data-if="client.logo"` on an
+  optional image so the slot disappears when no logo is sent.
+- **Company logos.** When you have a client's website but not its logo, use
+  `<img data-logo="client.website" alt="">` and send the website
+  (`"acme.com"`, `"https://www.acme.com"` or even `"jane@acme.com"`). `/fields`
+  lists it with type `website`. Two optional attributes pick the version:
+  `data-logo-theme="light"` (the default) or `"dark"` for a logo that sits on a
+  dark background, and `data-logo-shape="square"` (the brand's symbol, the
+  default) or `"full"` (the wide logo with the name). The logo comes from
+  logo.dev when the org has saved its key as the environment variable
+  `LOGO_DEV_SECRET_KEY`; otherwise from a built-in library of brand logos (the
+  brand's main logo, so `data-logo-shape` has no effect) and then the site's
+  own icon. When nothing is found the image is left out and the render still
+  succeeds, with the reason in `warnings`. A value that is not a website
+  (`"Acme Inc"`) is a `422`. Style the slot with a fixed height and
+  `object-fit:contain`, since logos come in every shape.
 - Send values nested (`{ "client": { "name": … } }`) or as flat dotted keys
   (`{ "client.name": … }`); both fill `{{client.name}}`.
 - An explicit `null` prints nothing (and a `null` list renders no rows). A key
@@ -221,16 +248,19 @@ Rules:
 **Generate a document:**
 
 1. `GET /api/decks/{id}/fields` returns every variable with its type (`text`,
-   `list` with its item `fields`, or `flag` for a `data-if`-only switch), whether
+   `image`, `website` for a company logo, `list` with its item `fields`, or
+   `flag` for a `data-if`-only switch), whether
    it is `optional`, and an `example`: a complete `values` object built from the
    deck's sample values. Start from it and replace the sample data with the real
    values; a required value with no sample shows as a `<name>` placeholder, and
    optional values without a sample are left out.
 2. `POST /api/decks/{id}/render` with `{ "values": { … } }` (optional
    `"filename"`, and `"expires_in"` in seconds: default 86400, max 604800) returns
-   `{ url, expires_at, size, filename, unused }`: a link to the finished PDF.
-   Download it or hand the URL on (an email attachment, a CRM record). The link
-   expires, so render again for a fresh one. The stored deck never changes.
+   `{ url, expires_at, size, filename, unused, warnings }`: a link to the
+   finished PDF. Download it or hand the URL on (an email attachment, a CRM
+   record). The link expires, so render again for a fresh one. The stored deck
+   never changes. `warnings` lists what was left out without failing, such as
+   `client.website: no logo found for acme.com, so the image is left out`.
 3. Rendering is **strict**: if any value the pages reach is missing or of the
    wrong kind, nothing renders and you get `422` with `missing` (exact paths such
    as `line_items[1].total`), `invalid`, and `unused` (keys no page uses). A key
@@ -275,7 +305,7 @@ use **Make variable**, or type `{{name}}` into any text.
 | DELETE | `/api/decks/{id}` | Delete |
 | GET  | `/api/decks/{id}/view` | Interactive reveal.js deck (HTML). `?sample=1` fills it with the sample values |
 | GET  | `/api/decks/{id}/fields` | The template's variables, their types, and a complete `example` values object |
-| POST | `/api/decks/{id}/render` | Fill the template with `{ values }` and render a PDF → `{ url, expires_at, size, filename, unused }`. Strict: `422` lists `missing`/`invalid` paths |
+| POST | `/api/decks/{id}/render` | Fill the template with `{ values }` and render a PDF → `{ url, expires_at, size, filename, unused, warnings }`. Strict: `422` lists `missing`/`invalid` paths |
 | GET  | `/api/decks/{id}/pdf` | Export to PDF (one slide/page per PDF page, continuing pages as long as they need), filled with the sample values |
 | GET  | `/api/decks/{id}/slide/{n}` | Render slide `n` (0-based) to a **PNG** — fetch it to SEE how your HTML actually rendered and confirm it looks right. Add `?output=url` → `{ url, expires_at }` (presigned link) — use this when calling through an API proxy that can't return binary bodies. Add `?sample=1` to see it filled with the sample values |
 | GET  | `/api/formats` | List page formats (id, label, kind, canvas) |

@@ -168,6 +168,53 @@ function showToast(msg: string) {
   document.body.appendChild(el);
   setTimeout(() => el.remove(), 6000);
 }
+// A company logo slot: an <img data-logo="client.website">, looked up from that website.
+interface LogoSlot { ref: string; shape: "square" | "full"; theme: "light" | "dark" }
+
+// The source <img> a canvas click landed on. `token` is set when its src is an
+// image variable ({{client.logo}}), `logo` when it is a company logo slot;
+// `inRow` when that variable is per row (inside data-each, not anchored with @root).
+function imageSlotAt(chunk: string, sid: number): { src: string; token: string | null; logo: LogoSlot | null; inRow: boolean } | null {
+  let found: { src: string; token: string | null; logo: LogoSlot | null; inRow: boolean } | null = null;
+  const { body } = parseHtmlSlide(chunk);
+  withBody(body, (r) => {
+    const el = elBySid(r, sid);
+    if (!el || el.tagName !== "IMG") return;
+    const src = el.getAttribute("src") ?? "";
+    const m = src.match(/^\s*\{\{\s*(@root\.)?([A-Za-z_][\w.-]*)\s*\}\}\s*$/);
+    const ref = el.getAttribute("data-logo");
+    const logo: LogoSlot | null = ref === null ? null : {
+      ref,
+      shape: el.getAttribute("data-logo-shape")?.toLowerCase() === "full" ? "full" : "square",
+      theme: el.getAttribute("data-logo-theme")?.toLowerCase() === "dark" ? "dark" : "light",
+    };
+    const perRow = logo ? !logo.ref.startsWith("@root.") : !!m && !m[1];
+    found = { src: logo ? "" : src, token: m ? m[2] : null, logo, inRow: (!!m || !!logo) && perRow && !!el.closest("[data-each]") };
+  });
+  return found;
+}
+// Make the image a company logo slot looked up from the website value `ref`;
+// its own picture goes (the template view shows a "Company logo" box instead).
+function setLogoHtml(chunk: string, sid: number, ref: string): string {
+  const { attrs, body } = parseHtmlSlide(chunk);
+  return buildHtmlSlide(attrs, withBody(body, (r) => {
+    const el = elBySid(r, sid);
+    if (!el || el.tagName !== "IMG") return;
+    el.setAttribute("data-logo", ref);
+    el.removeAttribute("src");
+  }));
+}
+function setAttrHtml(chunk: string, sid: number, name: string, value: string): string {
+  const { attrs, body } = parseHtmlSlide(chunk);
+  return buildHtmlSlide(attrs, withBody(body, (r) => elBySid(r, sid)?.setAttribute(name, value)));
+}
+function setImgSrcHtml(chunk: string, sid: number, src: string): string {
+  const { attrs, body } = parseHtmlSlide(chunk);
+  return buildHtmlSlide(attrs, withBody(body, (r) => {
+    const el = elBySid(r, sid);
+    if (el && el.tagName === "IMG") el.setAttribute("src", src);
+  }));
+}
 function removeElHtml(chunk: string, sid: number): string {
   const { attrs, body } = parseHtmlSlide(chunk);
   return buildHtmlSlide(attrs, withBody(body, (r) => elBySid(r, sid)?.remove()));
@@ -339,7 +386,7 @@ function parseNavMode(s: string | undefined): Nav {
   } catch { /* fall through */ }
   return { ...DEFAULT_NAV };
 }
-interface SelEl { sid: number; tag: string; anim: string; text: string }
+interface SelEl { sid: number; tag: string; anim: string; text: string; src?: string; logo?: LogoSlot | null }
 
 // The canned instruction behind "New brand from PDF" — replicate the attached
 // original as this brand. The server attaches the reference file(s) to the
@@ -385,6 +432,10 @@ export function App() {
   const [decks, setDecks] = useState<Deck[]>([]);
   const [templates, setTemplates] = useState<SlideTemplate[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // The open deck for code reached from the once-bound canvas message handler
+  // (inline edits, image swaps): its closures come from the first render, where
+  // selectedId is still null, so saves read the deck from here instead.
+  const selectedIdRef = useRef<string | null>(null);
 
   const [title, setTitle] = useState("");
   const [slides, setSlides] = useState<string[]>([]);
@@ -397,6 +448,7 @@ export function App() {
   const [previewSamples, setPreviewSamples] = useState(false);
   const sampleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const previewRef = useRef(false);
+  const sampleRef = useRef<Values>({}); // fresh sample values for the once-bound canvas handler
 
   // brand library
   const [brands, setBrands] = useState<{ id: string; name: string; tokens: BrandTokens }[]>([]);
@@ -541,7 +593,7 @@ export function App() {
 
   function selectDeck(d: Deck) {
     if (saveTimer.current) clearTimeout(saveTimer.current);
-    setSelectedId(d.id);
+    setSelectedId(d.id); selectedIdRef.current = d.id;
     setTitle(d.title);
     const s = splitSlides(d.content);
     const initial = s.length ? s : [""];
@@ -551,7 +603,8 @@ export function App() {
     setSelEl(null);
     setBrandId(d.brand_id ?? null); // reflect the deck's actual brand in the inspector
     setInstructions(d.instructions ?? ""); instructionsRef.current = d.instructions ?? "";
-    setSampleValues(parseValues(d.sample_values));
+    const samples = parseValues(d.sample_values);
+    setSampleValues(samples); sampleRef.current = samples;
     setPreviewSamples(false);
     resetHistory(); // history is per-deck
     titleRef.current = d.title;
@@ -570,10 +623,11 @@ export function App() {
     saveTimer.current = setTimeout(() => save(next, t, n, quiet), 500);
   }
   async function save(next = slides, t = title, n = nav, quiet = false) {
-    if (!selectedId) return;
+    const id = selectedIdRef.current;
+    if (!id) return;
     const body = { title: t, content: joinSlides(next), nav: JSON.stringify(n), instructions: instructionsRef.current };
     setSaving(true);
-    const up: Deck = await fetch(`/api/decks/${selectedId}`, {
+    const up: Deck = await fetch(`/api/decks/${id}`, {
       method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     }).then((r) => r.json());
     setDecks((ds) => ds.map((d) => (d.id === up.id ? up : d)));
@@ -586,9 +640,9 @@ export function App() {
   // Sample values save on their own debounce. They only change what the
   // preview shows, so the canvas reloads only while previewing.
   function updateSamples(next: Values) {
-    setSampleValues(next);
+    setSampleValues(next); sampleRef.current = next;
     if (sampleTimer.current) clearTimeout(sampleTimer.current);
-    const id = selectedId;
+    const id = selectedIdRef.current;
     sampleTimer.current = setTimeout(async () => {
       if (!id) return;
       const res = await fetch(`/api/decks/${id}`, {
@@ -665,6 +719,28 @@ export function App() {
   }
   async function onImgClick(sid: number, src: string) {
     console.info("[img-swap] img-click received sid=%d src=%s slide=%d", sid, src, selRef.current);
+    const slot = imageSlotAt(slidesRef.current[selRef.current] ?? "", sid);
+    // Selected too, so the inspector offers Make variable if the picker is cancelled.
+    setSelEl({ sid, tag: "IMG", anim: "none", text: "", src: slot?.src ?? "", logo: slot?.logo ?? null });
+    if (slot?.logo) {
+      // A company logo comes from a website value: a click never uploads a picture.
+      showToast(slot.inRow
+        ? `This logo is looked up from each row's ${slot.logo.ref}. Set it per row under Variables.`
+        : `This logo is looked up from ${slot.logo.ref}. Set a sample website under Variables and turn on Preview to see it.`);
+      return;
+    }
+    if (slot?.token) {
+      // An image variable: a click sets its sample, never the template's token.
+      if (slot.inRow) {
+        showToast(`This image comes from each row's ${slot.token}. Set it per row under Variables.`);
+        return;
+      }
+      const up = await pickAndUpload("image/*");
+      if (!up) return;
+      updateSamples(setAt(sampleRef.current, slot.token, `assets/${up.key}`));
+      showToast(`Sample image set for ${slot.token}. Turn on Preview to see it.`);
+      return;
+    }
     const a = await pickAndUpload("image/*");
     if (!a) return;
     const i = selRef.current; const chunk = slidesRef.current[i] ?? "";
@@ -706,8 +782,10 @@ export function App() {
     applyToSlide(sel, (c) => removeElHtml(c, selEl.sid));
     setSelEl(null);
   }
-  // Turn the selected element's text into {{name}}, keeping that text as the sample value.
-  function makeVariable(raw: string) {
+  // Turn the selected element's text into {{name}}, keeping that text as the
+  // sample value. `logo`: make the image a company logo looked up from the
+  // website value `name` instead.
+  function makeVariable(raw: string, logo = false) {
     if (!selEl) return;
     const name = toVarName(raw);
     if (!isValidName(name)) {
@@ -715,9 +793,28 @@ export function App() {
       return;
     }
     const chunk = slides[sel] ?? "";
+    if (selEl.tag === "IMG" && logo) {
+      applyToSlide(sel, () => setLogoHtml(chunk, selEl.sid, name));
+      setSelEl({ ...selEl, src: "", logo: { ref: name, shape: "square", theme: "light" } });
+      showToast(`Now a company logo. Set a sample website for ${name} under Variables and turn on Preview to see it.`);
+      return;
+    }
+    if (selEl.tag === "IMG") {
+      // The image becomes {{name}}; the picture it showed becomes the sample.
+      applyToSlide(sel, () => setImgSrcHtml(chunk, selEl.sid, `{{${name}}}`));
+      updateSamples(setAt(sampleValues, name, selEl.src ?? ""));
+      setSelEl({ ...selEl, src: `{{${name}}}` });
+      return;
+    }
     applyToSlide(sel, () => applyTextHtml(chunk, selEl.sid, `{{${name}}}`));
     updateSamples(setAt(sampleValues, name, selEl.text.trim()));
     setSelEl({ ...selEl, text: `{{${name}}}` });
+  }
+  function setLogoOption(option: "shape" | "theme", value: string) {
+    if (!selEl?.logo) return;
+    const chunk = slides[sel] ?? "";
+    applyToSlide(sel, () => setAttrHtml(chunk, selEl.sid, `data-logo-${option}`, value));
+    setSelEl({ ...selEl, logo: { ...selEl.logo, [option]: value } as LogoSlot });
   }
   function setPageFlow(on: boolean) {
     applyToSlide(sel, (c) => setSlideFlow(c, on));
@@ -780,7 +877,7 @@ export function App() {
   async function deleteDeck(id: string) {
     await fetch(`/api/decks/${id}`, { method: "DELETE" });
     const rows = await loadDecks();
-    if (id === selectedId) rows.length ? selectDeck(rows[0]) : (setSelectedId(null), setSlides([]));
+    if (id === selectedId) rows.length ? selectDeck(rows[0]) : (setSelectedId(null), (selectedIdRef.current = null), setSlides([]));
   }
   // Start a brand-new deck/document that uses the given brand, seeded from the
   // brand's own example slides for that format (server falls back to the generic
@@ -1224,7 +1321,17 @@ export function App() {
                   </div>
                   <SelectRow label="Animate in" value={selEl.anim} options={ANIMS.map((a) => a.l)}
                     onChange={(l) => setAnim(ANIMS.find((a) => a.l === l)!.v)} valueToLabel={(v) => ANIMS.find((a) => a.v === v)?.l ?? "None"} />
-                  <MakeVariable key={selEl.sid} disabled={selEl.text.includes("{{")} onMake={makeVariable} />
+                  {selEl.logo && (
+                    <div className="mt-2.5 space-y-1.5 border-t border-neutral-200 pt-2.5">
+                      <p className="text-[11px] leading-snug text-neutral-500">Company logo, looked up from the website in <code>{selEl.logo.ref}</code>.</p>
+                      <SelectRow label="Shape" value={selEl.logo.shape} options={["Square", "Full"]} valueToLabel={(v) => (v === "full" ? "Full" : "Square")}
+                        onChange={(l) => setLogoOption("shape", l === "Full" ? "full" : "square")} />
+                      <SelectRow label="Background" value={selEl.logo.theme} options={["Light", "Dark"]} valueToLabel={(v) => (v === "dark" ? "Dark" : "Light")}
+                        onChange={(l) => setLogoOption("theme", l === "Dark" ? "dark" : "light")} />
+                      <p className="text-[11px] leading-snug text-neutral-400">Square is the brand's symbol, Full its wide logo with the name, each in the version made for this background. Shape needs a logo.dev key (LOGO_DEV_SECRET_KEY in Environment Variables); without one the brand's main logo is used, in its dark-background version where it has one.</p>
+                    </div>
+                  )}
+                  <MakeVariable key={selEl.sid} image={selEl.tag === "IMG"} logo={!!selEl.logo} disabled={!!selEl.logo || (selEl.tag === "IMG" ? selEl.src ?? "" : selEl.text).includes("{{")} onMake={makeVariable} />
                 </div>
               ) : (
                 <div className="space-y-3">
@@ -1529,6 +1636,7 @@ function FieldInput({ field, value, onChange, compact }: { field: Field; value: 
     <div className="mb-1 flex items-center gap-1.5 text-xs text-neutral-600">
       <code className="text-[11px]">{field.name}</code>
       {field.optional && <span className="text-[10px] text-neutral-400">optional</span>}
+      {field.type === "website" && <span className="text-[10px] text-neutral-400">for the logo</span>}
     </div>
   );
   if (field.type === "flag") {
@@ -1564,29 +1672,61 @@ function FieldInput({ field, value, onChange, compact }: { field: Field; value: 
       </div>
     );
   }
+  const input = field.type === "image"
+    ? <ImageInput value={value} onChange={onChange} optional={field.optional} />
+    : <input placeholder={field.type === "website" ? "website, e.g. acme.com" : field.optional ? "optional" : ""} value={textOf(value)} onChange={(e) => onChange(e.target.value)} className={INPUT} />;
   if (compact) {
     return (
       <label className="flex items-center gap-1.5">
         <code title={field.name} className="w-[4.5rem] shrink-0 truncate text-[10px] text-neutral-400">{field.name}</code>
-        <input placeholder={field.optional ? "optional" : ""} value={textOf(value)} onChange={(e) => onChange(e.target.value)} className={INPUT} />
+        {input}
       </label>
     );
   }
+  if (field.type === "image" || field.type === "website") return <div>{label}{input}</div>;
   return <div>{label}<input value={textOf(value)} onChange={(e) => onChange(e.target.value)} className={INPUT} /></div>;
 }
 
-function MakeVariable({ disabled, onMake }: { disabled: boolean; onMake: (name: string) => void }) {
+// An image value: a URL, an upload (assets/<key>, kept while a sample uses it)
+// or an embedded data: image, with a thumbnail.
+function ImageInput({ value, onChange, optional }: { value: unknown; onChange: (v: unknown) => void; optional: boolean }) {
+  const v = textOf(value);
+  const embedded = v.startsWith("data:");
+  const preview = v.startsWith("assets/") ? `/api/uploads/${v.slice("assets/".length)}` : v;
+  return (
+    <div className="flex min-w-0 flex-1 items-center gap-1.5">
+      {v
+        ? <img src={preview} alt="" className="h-7 w-12 shrink-0 rounded border border-neutral-200 bg-white object-contain" />
+        : <span className="h-7 w-12 shrink-0 rounded border border-dashed border-neutral-300" />}
+      <input value={embedded ? "" : v} placeholder={embedded ? "embedded image" : optional ? "image URL (optional)" : "image URL"}
+        onChange={(e) => onChange(e.target.value)} className={INPUT} />
+      <button title="Upload an image" onClick={async (e) => { e.preventDefault(); const a = await pickAndUpload("image/*"); if (a) onChange(`assets/${a.key}`); }}
+        className="shrink-0 rounded border border-neutral-200 bg-white px-1.5 py-1 text-[11px] text-neutral-600 hover:bg-neutral-50">Upload</button>
+    </div>
+  );
+}
+
+function MakeVariable({ disabled, onMake, image, logo }: { disabled: boolean; onMake: (name: string, logo?: boolean) => void; image?: boolean; logo?: boolean }) {
   const [name, setName] = useState("");
-  if (disabled) return <p className="mt-2 text-[11px] leading-snug text-neutral-400">This element holds a variable. Edit its sample value under Variables.</p>;
+  if (disabled) {
+    return <p className="mt-2 text-[11px] leading-snug text-neutral-400">
+      {logo ? "Edit its sample website under Variables." : `This ${image ? "image" : "element"} holds a variable. Edit its sample value under Variables.`}
+    </p>;
+  }
   return (
     <div className="mt-2.5 border-t border-neutral-200 pt-2.5">
       <div className="mb-1 text-xs text-neutral-600">Make variable</div>
       <div className="flex gap-1.5">
         <input value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && name.trim()) onMake(name); }}
-          placeholder="e.g. client.name" className={INPUT} />
+          placeholder={image ? "e.g. client.logo" : "e.g. client.name"} className={INPUT} />
         <button onClick={() => onMake(name)} disabled={!name.trim()} className="shrink-0 rounded bg-neutral-900 px-2 text-xs font-medium text-white hover:bg-neutral-700 disabled:opacity-40">Make</button>
       </div>
-      <p className="mt-1 text-[11px] leading-snug text-neutral-400">Replaces this text with <code>{"{{name}}"}</code> and keeps it as the sample value.</p>
+      <p className="mt-1 text-[11px] leading-snug text-neutral-400">Replaces this {image ? "image" : "text"} with <code>{"{{name}}"}</code> and keeps it as the sample value.</p>
+      {image && (
+        <button onClick={() => onMake(name.trim() || "client.website", true)} className="mt-1.5 text-left text-[11px] leading-snug text-neutral-600 underline decoration-neutral-300 underline-offset-2 hover:text-neutral-900">
+          Or make it a company logo, looked up from a website ({name.trim() || "client.website"})
+        </button>
+      )}
     </div>
   );
 }

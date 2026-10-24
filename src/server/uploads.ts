@@ -1,3 +1,5 @@
+import type { LogoCache } from "./logos";
+
 let _bucket: R2Bucket;
 
 export function initUploads(bucket: R2Bucket) {
@@ -71,6 +73,23 @@ export async function getUploadBytes(
 export async function deleteUpload(key: string): Promise<void> {
   await _bucket.delete(key);
 }
+
+// Looked-up company logos (logos.ts), under logos/…. They are not uploads: the
+// orphan sweep walks the assets table, so it never touches them. A remembered
+// miss is an empty object marked miss=1.
+export const logoCache: LogoCache = {
+  async get(key) {
+    const obj = await _bucket.get(key);
+    if (!obj) return null;
+    const type = obj.httpMetadata?.contentType ?? "";
+    const found = obj.customMetadata?.miss || !type.startsWith("image/") ? null : { body: new Uint8Array(await obj.arrayBuffer()), type };
+    return { found, storedAt: obj.uploaded.getTime() };
+  },
+  async put(key, found) {
+    if (found) await _bucket.put(key, found.body, { httpMetadata: { contentType: found.type } });
+    else await _bucket.put(key, new Uint8Array(0), { customMetadata: { miss: "1" } });
+  },
+};
 
 /** Filesystem-safe, collision-resistant key from an original filename. */
 export function makeKey(filename: string): string {

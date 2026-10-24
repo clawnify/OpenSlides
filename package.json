@@ -15,6 +15,7 @@
     "@antv/infographic": "^0.2.19",
     "@clawnify/app": "^0.2.1",
     "@clawnify/db": "^0.4.2",
+    "@clawnify/logokit": "^0.3.0",
     "@hono/zod-openapi": "^1.5.1",
     "@openrouter/ai-sdk-provider": "^2.9.1",
     "@phosphor-icons/react": "^2.1.10",
