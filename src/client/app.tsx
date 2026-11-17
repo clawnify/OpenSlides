@@ -983,7 +983,10 @@ export function App() {
 
   return (
     <div className="flex h-screen flex-col bg-neutral-50 text-neutral-900">
-      {embedded && <AppNav title="Slides" active={page === "brands" ? "brands" : selectedId ?? ""}
+      {/* One <AppNav>: inside Clawnify the dashboard draws this navigation.
+          Anywhere else the top bar below is the navigation, so the standalone
+          slot draws nothing of its own. */}
+      <AppNav title="Slides" active={page === "brands" ? "brands" : selectedId ?? ""}
         groups={[
           { label: "Presentations", items: decks.map((d) => ({ id: d.id, label: d.title || "Untitled", icon: "file-text", href: `/?deck=${encodeURIComponent(d.id)}` })) },
           { items: [
@@ -996,7 +999,7 @@ export function App() {
           else if (item.id === "new-deck") void newDeck();
           else if (item.id === "new-document") void newDeck("a4-portrait");
           else { const deck = decks.find((d) => d.id === item.id); if (deck) selectDeck(deck); }
-        }} />}
+        }} standalone={() => null} />
       {/* top bar */}
       <header className="flex h-12 shrink-0 items-center gap-2 border-b border-neutral-200 bg-white px-3">
         <span className="grid h-7 w-7 place-items-center rounded-md bg-neutral-900 text-white"><Presentation size={15} /></span>
